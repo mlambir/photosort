@@ -66,7 +66,7 @@ impl State {
         }
     }
 
-    pub fn view(&self) -> Element<Message> {
+    pub fn view(&self) -> Element<'_, Message> {
         column![
             text("Settings").size(24),
             row![

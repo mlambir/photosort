@@ -19,7 +19,7 @@ pub enum Message {
     SourceSelected(Option<PathBuf>),
     ScanComplete(Vec<Photo>),
     StartImport,
-    ImportComplete(Result<(), String>),
+    ImportComplete(()),
 }
 
 impl State {
@@ -81,9 +81,8 @@ impl State {
                                 for mut photo in photos {
                                     let _ = Importer::copy_and_rename(&mut photo, &target_dir);
                                 }
-                                Ok(())
                             },
-                            Message::ImportComplete
+                            |_| Message::ImportComplete(())
                         )
                     } else {
                         self.status = "No photos to import.".to_string();
@@ -94,7 +93,7 @@ impl State {
                     Task::none()
                 }
             }
-            Message::ImportComplete(_) => {
+            Message::ImportComplete(()) => {
                 self.is_importing = false;
                 self.import_progress = 1.0;
                 self.status = "Import complete!".to_string();

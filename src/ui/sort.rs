@@ -1,6 +1,6 @@
 use iced::widget::{button, column, row, text, image, container, pane_grid, scrollable};
 use iced::{Element, Task, Length, Alignment};
-use iced::widget::pane_grid::{PaneGrid, Pane};
+use iced::widget::pane_grid::PaneGrid;
 use crate::core::config::Config;
 use std::path::PathBuf;
 use std::fs;
@@ -26,8 +26,6 @@ pub struct State {
     to_sort_dir: Option<PathBuf>,
     library_dir: Option<PathBuf>,
     panes: pane_grid::State<PaneState>,
-    grid_pane: Pane,
-    preview_pane: Pane,
     is_loading: bool,
 }
 
@@ -44,13 +42,13 @@ pub enum Message {
     Select(usize),
     SetAction(SortAction),
     ApplyChanges,
-    ApplyComplete(Result<(), String>),
+    ApplyComplete(()),
 }
 
 impl State {
     pub fn new(config: &Config) -> Self {
         let (mut panes, grid_pane) = pane_grid::State::new(PaneState::Grid);
-        let (preview_pane, _) = panes.split(
+        let (_preview_pane, _) = panes.split(
             pane_grid::Axis::Vertical,
             grid_pane,
             PaneState::Preview,
@@ -63,8 +61,6 @@ impl State {
             to_sort_dir: config.to_sort_dir.clone(),
             library_dir: config.library_dir.clone(),
             panes,
-            grid_pane,
-            preview_pane,
             is_loading: false,
         }
     }
@@ -178,16 +174,15 @@ impl State {
                                     SortAction::Unsorted => {}
                                 }
                             }
-                            Ok(())
                         },
-                        Message::ApplyComplete
+                        |_| Message::ApplyComplete(())
                     )
                 } else {
                     self.status = "Library directory not configured!".to_string();
                     Task::none()
                 }
             }
-            Message::ApplyComplete(_) => {
+            Message::ApplyComplete(()) => {
                 self.items.retain(|item| item.action == SortAction::Unsorted);
                 self.selected_index = if self.items.is_empty() { None } else { Some(0) };
                 self.is_loading = false;

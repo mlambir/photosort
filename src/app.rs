@@ -1,4 +1,4 @@
-use iced::widget::{button, column, container, row, text};
+use iced::widget::container;
 use iced::{Element, Length, Task};
 
 use crate::core::config::Config;
@@ -83,7 +83,7 @@ impl PhotoSortApp {
         }
     }
 
-    pub fn view(&self) -> Element<Message> {
+    pub fn view(&self) -> Element<'_, Message> {
         let tabs = iced_aw::Tabs::new(Message::TabSelected)
             .push(
                 Tab::Import,
