@@ -84,30 +84,28 @@ impl PhotoSortApp {
     }
 
     pub fn view(&self) -> Element<Message> {
-        let tabs = row![
-            button(text("Import").size(16))
-                .on_press(Message::TabSelected(Tab::Import)),
-            button(text("Sort").size(16))
-                .on_press(Message::TabSelected(Tab::Sort)),
-            button(text("Settings").size(16))
-                .on_press(Message::TabSelected(Tab::Settings)),
-        ]
-        .spacing(10)
-        .padding(10);
+        let tabs = iced_aw::Tabs::new(Message::TabSelected)
+            .push(
+                Tab::Import,
+                iced_aw::TabLabel::Text("Import".to_string()),
+                self.import_state.view().map(Message::ImportMessage),
+            )
+            .push(
+                Tab::Sort,
+                iced_aw::TabLabel::Text("Sort".to_string()),
+                self.sort_state.view().map(Message::SortMessage),
+            )
+            .push(
+                Tab::Settings,
+                iced_aw::TabLabel::Text("Settings".to_string()),
+                self.settings_state.view().map(Message::SettingsMessage),
+            )
+            .set_active_tab(&self.active_tab);
 
-        let content: Element<Message> = match self.active_tab {
-            Tab::Import => self.import_state.view().map(Message::ImportMessage),
-            Tab::Sort => self.sort_state.view().map(Message::SortMessage),
-            Tab::Settings => self.settings_state.view().map(Message::SettingsMessage),
-        };
-
-        column![
-            tabs,
-            container(content)
-                .width(Length::Fill)
-                .height(Length::Fill)
-                .padding(20)
-        ]
-        .into()
+        container(tabs)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .padding(20)
+            .into()
     }
 }
