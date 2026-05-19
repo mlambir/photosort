@@ -109,9 +109,9 @@ impl State {
             row![
                 button("Select Source").on_press(Message::SelectSource),
                 text(self.source_dir.as_ref().map(|p| p.to_string_lossy().to_string()).unwrap_or_else(|| "None".to_string()))
-            ].spacing(10),
+            ].spacing(5),
             text(&self.status),
-        ].spacing(20);
+        ].spacing(10);
 
         if !self.photos_to_import.is_empty() && !self.is_importing {
             col = col.push(button("Start Import").on_press(Message::StartImport));

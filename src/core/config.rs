@@ -1,10 +1,24 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum AppTheme {
+    Light,
+    Dark,
+}
+
+impl Default for AppTheme {
+    fn default() -> Self {
+        AppTheme::Dark
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     pub to_sort_dir: Option<PathBuf>,
     pub library_dir: Option<PathBuf>,
+    #[serde(default)]
+    pub theme: AppTheme,
 }
 
 impl Default for Config {
@@ -15,6 +29,7 @@ impl Default for Config {
         Self {
             to_sort_dir: pictures.as_ref().map(|p| p.join("ToSort")),
             library_dir: pictures.as_ref().map(|p| p.join("Library")),
+            theme: AppTheme::default(),
         }
     }
 }

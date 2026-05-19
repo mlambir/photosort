@@ -2,7 +2,7 @@ use iced::widget::container;
 use iced::{Element, Length, Task};
 
 use crate::core::config::Config;
-use crate::ui::{import, settings, sort};
+use crate::ui::{import, settings, sort, theme};
 
 pub fn run() -> iced::Result {
     iced::application(
@@ -11,6 +11,7 @@ pub fn run() -> iced::Result {
         PhotoSortApp::view
     )
     .title("PhotoSort")
+    .theme(PhotoSortApp::theme)
     .run()
 }
 
@@ -38,6 +39,10 @@ pub enum Message {
 }
 
 impl PhotoSortApp {
+    pub fn theme(&self) -> iced::Theme {
+        theme::get_theme(self.config.theme)
+    }
+
     pub fn new_boot() -> (Self, Task<Message>) {
         let config = Config::load().unwrap_or_default();
         (Self::new(config), Task::none())
@@ -105,7 +110,7 @@ impl PhotoSortApp {
         container(tabs)
             .width(Length::Fill)
             .height(Length::Fill)
-            .padding(20)
+            .padding(0)
             .into()
     }
 }

@@ -233,7 +233,7 @@ impl State {
                                 .style(move |_theme| iced::widget::container::Style {
                                     background: Some(iced::Background::Color(color)),
                                     border: iced::Border {
-                                        radius: 10.0.into(),
+                                        radius: 0.0.into(),
                                         ..iced::Border::default()
                                     },
                                     ..iced::widget::container::Style::default()
@@ -269,7 +269,7 @@ impl State {
                                 border: iced::Border {
                                     color: border_color,
                                     width: if is_selected { 3.0 } else { 0.0 },
-                                    radius: 4.0.into(),
+                                    radius: 0.0.into(),
                                 },
                                 ..iced::widget::container::Style::default()
                             });
@@ -318,7 +318,7 @@ impl State {
                         preview_col = preview_col.push(text("No image selected"));
                     }
                     
-                    pane_grid::Content::new(container(preview_col).padding(20).width(Length::Fill).height(Length::Fill))
+                    pane_grid::Content::new(container(preview_col).padding(10).width(Length::Fill).height(Length::Fill))
                 }
             }
         })
