@@ -1,9 +1,11 @@
-use iced::widget::{button, column, row, text, image, container, pane_grid, scrollable};
-use iced::{Element, Task, Length, Alignment};
+use iced::widget::{button, column, row, text, image, container, pane_grid, scrollable, canvas};
+use iced::{Element, Task, Length, Alignment, Subscription};
 use iced::widget::pane_grid::PaneGrid;
 use crate::core::config::Config;
+use crate::ui::viewer::{self, ViewerState, PreviewCanvas};
 use std::path::PathBuf;
 use std::fs;
+use ::image::GenericImageView;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SortAction {
@@ -15,6 +17,9 @@ pub enum SortAction {
 #[derive(Debug, Clone)]
 pub struct SortItem {
     pub path: PathBuf,
+    pub filename: String,
+    pub file_size_bytes: u64,
+    pub dimensions: (u32, u32),
     pub thumbnail: iced::widget::image::Handle,
     pub action: SortAction,
 }
@@ -27,6 +32,8 @@ pub struct State {
     library_dir: Option<PathBuf>,
     panes: pane_grid::State<PaneState>,
     is_loading: bool,
+    preview_viewer: ViewerState,
+    preview_is_fit: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -43,6 +50,10 @@ pub enum Message {
     SetAction(SortAction),
     ApplyChanges,
     ApplyComplete(()),
+    ZoomIn,
+    ZoomOut,
+    ResetZoom,
+    ViewerMessage(viewer::Message),
 }
 
 impl State {
@@ -62,6 +73,8 @@ impl State {
             library_dir: config.library_dir.clone(),
             panes,
             is_loading: false,
+            preview_viewer: ViewerState::default(),
+            preview_is_fit: true,
         }
     }
 
@@ -97,7 +110,12 @@ impl State {
                         paths.sort();
                         
                         for path in paths {
+                            let metadata = fs::metadata(&path).ok();
+                            let file_size_bytes = metadata.map(|m| m.len()).unwrap_or(0);
+                            let filename = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+                            
                             if let Ok(img) = ::image::open(&path) {
+                                let orig_dimensions = img.dimensions();
                                 let thumb = img.thumbnail(256, 256);
                                 let rgba = thumb.to_rgba8();
                                 let dimensions = rgba.dimensions();
@@ -108,6 +126,9 @@ impl State {
                                 );
                                 found.push(SortItem {
                                     path,
+                                    filename,
+                                    file_size_bytes,
+                                    dimensions: orig_dimensions,
                                     thumbnail: handle,
                                     action: SortAction::Unsorted,
                                 });
@@ -139,6 +160,53 @@ impl State {
             }
             Message::Select(index) => {
                 self.selected_index = Some(index);
+                self.preview_is_fit = true;
+                self.preview_viewer = ViewerState::default();
+                Task::none()
+            }
+            Message::ZoomIn => {
+                let bounds = self.preview_viewer.bounds.lock().unwrap().unwrap_or(iced::Size::new(100.0, 100.0));
+                let center = iced::Point::new(bounds.width / 2.0, bounds.height / 2.0);
+                self.apply_zoom(1.2, center);
+                Task::none()
+            }
+            Message::ZoomOut => {
+                let bounds = self.preview_viewer.bounds.lock().unwrap().unwrap_or(iced::Size::new(100.0, 100.0));
+                let center = iced::Point::new(bounds.width / 2.0, bounds.height / 2.0);
+                self.apply_zoom(0.8, center);
+                Task::none()
+            }
+            Message::ResetZoom => {
+                self.preview_is_fit = true;
+                self.preview_viewer = ViewerState::default();
+                Task::none()
+            }
+            Message::ViewerMessage(msg) => {
+                match msg {
+                    viewer::Message::Zoomed(multiplier, cursor) => {
+                        self.apply_zoom(multiplier, cursor);
+                    }
+                    viewer::Message::Dragged(pos) => {
+                        if let Some(last) = self.preview_viewer.last_cursor {
+                            self.preview_viewer.offset.x += pos.x - last.x;
+                            self.preview_viewer.offset.y += pos.y - last.y;
+                        }
+                        self.preview_viewer.last_cursor = Some(pos);
+                    }
+                    viewer::Message::DragStarted(pos) => {
+                        if self.preview_is_fit {
+                            self.preview_is_fit = false;
+                            if let Ok(z) = self.preview_viewer.rendered_zoom.lock() { self.preview_viewer.zoom = *z; }
+                            if let Ok(o) = self.preview_viewer.rendered_offset.lock() { self.preview_viewer.offset = *o; }
+                        }
+                        self.preview_viewer.is_dragging = true;
+                        self.preview_viewer.last_cursor = Some(pos);
+                    }
+                    viewer::Message::DragEnded => {
+                        self.preview_viewer.is_dragging = false;
+                        self.preview_viewer.last_cursor = None;
+                    }
+                }
                 Task::none()
             }
             Message::SetAction(action) => {
@@ -189,6 +257,43 @@ impl State {
                 self.update_status();
                 Task::none()
             }
+        }
+    }
+
+    fn apply_zoom(&mut self, multiplier: f32, center: iced::Point) {
+        if self.preview_is_fit {
+            self.preview_is_fit = false;
+            if let Ok(z) = self.preview_viewer.rendered_zoom.lock() { self.preview_viewer.zoom = *z; }
+            if let Ok(o) = self.preview_viewer.rendered_offset.lock() { self.preview_viewer.offset = *o; }
+        }
+        
+        let old_zoom = self.preview_viewer.zoom;
+        let new_zoom = old_zoom * multiplier;
+        
+        let cursor_in_image_x = (center.x - self.preview_viewer.offset.x) / old_zoom;
+        let cursor_in_image_y = (center.y - self.preview_viewer.offset.y) / old_zoom;
+        
+        self.preview_viewer.offset.x = center.x - cursor_in_image_x * new_zoom;
+        self.preview_viewer.offset.y = center.y - cursor_in_image_y * new_zoom;
+        
+        self.preview_viewer.zoom = new_zoom;
+    }
+
+    pub fn subscription(&self) -> Subscription<Message> {
+        if self.preview_viewer.is_dragging {
+            iced::event::listen_with(|event, _status, _window| {
+                match event {
+                    iced::Event::Mouse(iced::mouse::Event::CursorMoved { position }) => {
+                        Some(Message::ViewerMessage(viewer::Message::Dragged(position)))
+                    }
+                    iced::Event::Mouse(iced::mouse::Event::ButtonReleased(iced::mouse::Button::Left)) => {
+                        Some(Message::ViewerMessage(viewer::Message::DragEnded))
+                    }
+                    _ => None,
+                }
+            })
+        } else {
+            Subscription::none()
         }
     }
 
@@ -290,21 +395,39 @@ impl State {
                     pane_grid::Content::new(grid_view)
                 }
                 PaneState::Preview => {
-                    let mut preview_col = column![].spacing(20).align_x(Alignment::Center);
+                    let mut preview_col = column![].spacing(10).align_x(Alignment::Center);
                     
                     if let Some(idx) = self.selected_index {
                         if idx < self.items.len() {
                             let item = &self.items[idx];
                             
-                            let img = image(item.path.to_string_lossy().to_string())
-                                .width(Length::Fill)
-                                .height(Length::Fill);
-                                
-                            preview_col = preview_col.push(
-                                container(img)
-                                    .width(Length::Fill)
-                                    .height(Length::FillPortion(4))
-                            );
+                            // File Details Header
+                            let details = column![
+                                text(format!("File: {}", item.filename)).size(16),
+                                text(format!("Size: {:.2} MB", item.file_size_bytes as f64 / 1_048_576.0)).size(14),
+                                text(format!("Dimensions: {} x {}", item.dimensions.0, item.dimensions.1)).size(14),
+                            ].spacing(5).align_x(Alignment::Center);
+                            
+                            preview_col = preview_col.push(details);
+                            
+                            let canvas_widget = canvas(PreviewCanvas {
+                                handle: image::Handle::from_path(item.path.clone()),
+                                dimensions: item.dimensions,
+                                state: &self.preview_viewer,
+                                is_fit: self.preview_is_fit,
+                            })
+                            .width(Length::Fill)
+                            .height(Length::FillPortion(5));
+                            
+                            let mapped_canvas = Element::from(canvas_widget).map(Message::ViewerMessage);
+                            preview_col = preview_col.push(mapped_canvas);
+                            
+                            // Controls
+                            let zoom_controls = row![
+                                button("Zoom Out (-)").on_press(Message::ZoomOut),
+                                button("Reset").on_press(Message::ResetZoom),
+                                button("Zoom In (+)").on_press(Message::ZoomIn),
+                            ].spacing(10);
                             
                             let actions = row![
                                 button("Discard").on_press(Message::SetAction(SortAction::Discard)),
@@ -312,6 +435,7 @@ impl State {
                                 button("Keep").on_press(Message::SetAction(SortAction::Keep)),
                             ].spacing(20);
                             
+                            preview_col = preview_col.push(zoom_controls);
                             preview_col = preview_col.push(actions);
                         }
                     } else {

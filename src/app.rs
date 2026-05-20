@@ -12,6 +12,7 @@ pub fn run() -> iced::Result {
     )
     .title("PhotoSort")
     .theme(PhotoSortApp::theme)
+    .subscription(PhotoSortApp::subscription)
     .run()
 }
 
@@ -41,6 +42,14 @@ pub enum Message {
 impl PhotoSortApp {
     pub fn theme(&self) -> iced::Theme {
         theme::get_theme(self.config.theme)
+    }
+
+    pub fn subscription(&self) -> iced::Subscription<Message> {
+        if self.active_tab == Tab::Sort {
+            self.sort_state.subscription().map(Message::SortMessage)
+        } else {
+            iced::Subscription::none()
+        }
     }
 
     pub fn new_boot() -> (Self, Task<Message>) {
