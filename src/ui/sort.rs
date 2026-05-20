@@ -54,6 +54,20 @@ pub enum Message {
     ZoomOut,
     ResetZoom,
     ViewerMessage(viewer::Message),
+    RefreshThumbnails,
+}
+
+fn make_placeholder_thumbnail() -> iced::widget::image::Handle {
+    let width = 256u32;
+    let height = 256u32;
+    let mut pixels = vec![0u8; (width * height * 4) as usize];
+    for i in (0..pixels.len()).step_by(4) {
+        pixels[i] = 100;     // R
+        pixels[i + 1] = 110; // G
+        pixels[i + 2] = 120; // B
+        pixels[i + 3] = 255; // A
+    }
+    iced::widget::image::Handle::from_rgba(width, height, pixels)
 }
 
 impl State {
@@ -89,15 +103,19 @@ impl State {
         if let Some(to_sort) = &self.to_sort_dir {
             let dir = to_sort.clone();
             self.is_loading = true;
-            self.status = "Generating thumbnails...".to_string();
+            self.status = "Loading photos...".to_string();
             
             Task::perform(
                 async move {
                     let mut found = Vec::new();
-                    if let Ok(entries) = std::fs::read_dir(dir) {
+                    let cache_dir = dir.join(".thumbnail_cache");
+                    if let Ok(entries) = std::fs::read_dir(&dir) {
                         let mut paths = Vec::new();
                         for entry in entries.flatten() {
                             let path = entry.path();
+                            if path.components().any(|c| c.as_os_str() == ".thumbnail_cache") {
+                                continue;
+                            }
                             if path.is_file() {
                                 if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
                                     let ext = ext.to_lowercase();
@@ -113,26 +131,23 @@ impl State {
                             let metadata = fs::metadata(&path).ok();
                             let file_size_bytes = metadata.map(|m| m.len()).unwrap_or(0);
                             let filename = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+                            let orig_dimensions = ::image::image_dimensions(&path).unwrap_or((0, 0));
                             
-                            if let Ok(img) = ::image::open(&path) {
-                                let orig_dimensions = img.dimensions();
-                                let thumb = img.thumbnail(256, 256);
-                                let rgba = thumb.to_rgba8();
-                                let dimensions = rgba.dimensions();
-                                let handle = iced::widget::image::Handle::from_rgba(
-                                    dimensions.0, 
-                                    dimensions.1, 
-                                    rgba.into_raw()
-                                );
-                                found.push(SortItem {
-                                    path,
-                                    filename,
-                                    file_size_bytes,
-                                    dimensions: orig_dimensions,
-                                    thumbnail: handle,
-                                    action: SortAction::Unsorted,
-                                });
-                            }
+                            let thumb_path = cache_dir.join(format!("{}.jpg", filename));
+                            let handle = if thumb_path.exists() {
+                                iced::widget::image::Handle::from_path(thumb_path)
+                            } else {
+                                make_placeholder_thumbnail()
+                            };
+                            
+                            found.push(SortItem {
+                                path,
+                                filename,
+                                file_size_bytes,
+                                dimensions: orig_dimensions,
+                                thumbnail: handle,
+                                action: SortAction::Unsorted,
+                            });
                         }
                     }
                     found
@@ -150,6 +165,79 @@ impl State {
             Message::Resized(pane_grid::ResizeEvent { split, ratio }) => {
                 self.panes.resize(split, ratio);
                 Task::none()
+            }
+            Message::RefreshThumbnails => {
+                if let Some(to_sort) = &self.to_sort_dir {
+                    let dir = to_sort.clone();
+                    self.is_loading = true;
+                    self.status = "Regenerating thumbnail cache...".to_string();
+                    
+                    Task::perform(
+                        async move {
+                            let cache_dir = dir.join(".thumbnail_cache");
+                            let _ = std::fs::remove_dir_all(&cache_dir);
+                            let _ = std::fs::create_dir_all(&cache_dir);
+                            
+                            let mut found = Vec::new();
+                            if let Ok(entries) = std::fs::read_dir(&dir) {
+                                let mut paths = Vec::new();
+                                for entry in entries.flatten() {
+                                    let path = entry.path();
+                                    if path.components().any(|c| c.as_os_str() == ".thumbnail_cache") {
+                                        continue;
+                                    }
+                                    if path.is_file() {
+                                        if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+                                            let ext = ext.to_lowercase();
+                                            if ["jpg", "jpeg", "png", "bmp", "tiff", "webp"].contains(&ext.as_str()) {
+                                                paths.push(path);
+                                            }
+                                        }
+                                    }
+                                }
+                                paths.sort();
+                                
+                                for path in paths {
+                                    let metadata = fs::metadata(&path).ok();
+                                    let file_size_bytes = metadata.map(|m| m.len()).unwrap_or(0);
+                                    let filename = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+                                    
+                                    if let Ok(img) = ::image::open(&path) {
+                                        let orig_dimensions = img.dimensions();
+                                        let thumb = img.thumbnail(256, 256);
+                                        
+                                        let thumb_path = cache_dir.join(format!("{}.jpg", filename));
+                                        let handle = if thumb.save(&thumb_path).is_ok() {
+                                            iced::widget::image::Handle::from_path(thumb_path)
+                                        } else {
+                                            let rgba = thumb.to_rgba8();
+                                            let dimensions = rgba.dimensions();
+                                            iced::widget::image::Handle::from_rgba(
+                                                dimensions.0, 
+                                                dimensions.1, 
+                                                rgba.into_raw()
+                                            )
+                                        };
+                                        
+                                        found.push(SortItem {
+                                            path,
+                                            filename,
+                                            file_size_bytes,
+                                            dimensions: orig_dimensions,
+                                            thumbnail: handle,
+                                            action: SortAction::Unsorted,
+                                        });
+                                    }
+                                }
+                            }
+                            found
+                        },
+                        Message::Refreshed
+                    )
+                } else {
+                    self.status = "To Sort directory not configured.".to_string();
+                    Task::none()
+                }
             }
             Message::Refreshed(items) => {
                 self.items = items;
@@ -226,6 +314,7 @@ impl State {
                     Task::perform(
                         async move {
                             for item in items_to_process {
+                                let mut has_moved_or_deleted = false;
                                 match item.action {
                                     SortAction::Keep => {
                                         let target = library.join(item.path.file_name().unwrap());
@@ -233,13 +322,24 @@ impl State {
                                         if fs::rename(&item.path, &target).is_err() {
                                             if fs::copy(&item.path, &target).is_ok() {
                                                 let _ = fs::remove_file(&item.path);
+                                                has_moved_or_deleted = true;
                                             }
+                                        } else {
+                                            has_moved_or_deleted = true;
                                         }
                                     }
                                     SortAction::Discard => {
-                                        let _ = fs::remove_file(&item.path);
+                                        if fs::remove_file(&item.path).is_ok() {
+                                            has_moved_or_deleted = true;
+                                        }
                                     }
                                     SortAction::Unsorted => {}
+                                }
+                                if has_moved_or_deleted {
+                                    if let Some(parent) = item.path.parent() {
+                                        let thumb_path = parent.join(".thumbnail_cache").join(format!("{}.jpg", item.filename));
+                                        let _ = fs::remove_file(thumb_path);
+                                    }
                                 }
                             }
                         },
@@ -450,8 +550,21 @@ impl State {
         .height(Length::Fill)
         .on_resize(10.0, Message::Resized);
 
-        let mut main_col = column![
+        let mut header = row![
             text("Sort Photos").size(24),
+        ].spacing(10).align_y(Alignment::Center);
+        
+        if !self.is_loading {
+            header = header.push(iced::widget::Space::new().width(Length::Fill));
+            header = header.push(
+                button("Refresh Thumbnails")
+                    .on_press(Message::RefreshThumbnails)
+                    .padding(8)
+            );
+        }
+
+        let mut main_col = column![
+            header,
             text(&self.status),
         ].spacing(10);
         

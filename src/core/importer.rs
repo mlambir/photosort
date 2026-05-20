@@ -15,6 +15,9 @@ impl Importer {
 
         for entry in WalkDir::new(path).into_iter().filter_map(|e| e.ok()) {
             let path = entry.path();
+            if path.components().any(|c| c.as_os_str() == ".thumbnail_cache") {
+                continue;
+            }
             if path.is_file() {
                 if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
                     if extensions.contains(&ext.to_lowercase().as_str()) {
