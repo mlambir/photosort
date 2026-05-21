@@ -2987,6 +2987,7 @@ dependencies = [
  "blake3",
  "chrono",
  "directories",
+ "futures",
  "iced",
  "iced_aw",
  "iced_core",
@@ -2995,6 +2996,7 @@ dependencies = [
  "rfd",
  "serde",
  "serde_json",
+ "tokio",
  "walkdir",
  "winit 0.29.15",
 ]

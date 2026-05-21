@@ -6,8 +6,10 @@ use crate::ui::viewer::{self, ViewerState, PreviewCanvas};
 use crate::ui::theme::{brutalist_button_style, brutalist_light_button_style, bold_font, brutalist_card_style, brutalist_card_shadow_style};
 use std::path::PathBuf;
 use std::fs;
-use ::image::GenericImageView;
 use exif::{In, Tag, Reader};
+use tokio::sync::mpsc::UnboundedReceiver;
+use std::sync::Arc;
+use tokio::sync::Mutex as TokioMutex;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SortAction {
@@ -22,8 +24,15 @@ pub struct SortItem {
     pub filename: String,
     pub file_size_bytes: u64,
     pub dimensions: (u32, u32),
-    pub thumbnail: iced::widget::image::Handle,
+    pub thumbnail: Option<iced::widget::image::Handle>,
     pub action: SortAction,
+}
+
+struct ThumbnailRequest {
+    idx: usize,
+    path: PathBuf,
+    filename: String,
+    cache_dir: PathBuf,
 }
 
 pub struct State {
@@ -36,6 +45,11 @@ pub struct State {
     is_loading: bool,
     preview_viewer: ViewerState,
     preview_is_fit: bool,
+    spinner_tick: usize,
+    preview_loading: bool,
+    preview_handle: Option<iced::widget::image::Handle>,
+    thumbnail_sender: std::sync::mpsc::Sender<ThumbnailRequest>,
+    result_rx: Arc<TokioMutex<UnboundedReceiver<Message>>>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -47,7 +61,7 @@ pub enum PaneState {
 #[derive(Debug, Clone)]
 pub enum Message {
     Resized(pane_grid::ResizeEvent),
-    Refreshed(Vec<SortItem>),
+    Refreshed(Vec<(PathBuf, String, u64)>),
     Select(usize),
     SetAction(SortAction),
     ApplyChanges,
@@ -57,6 +71,10 @@ pub enum Message {
     ResetZoom,
     ViewerMessage(viewer::Message),
     RefreshThumbnails,
+    ThumbnailLoaded { idx: usize, path: PathBuf, dimensions: (u32, u32), handle: Option<iced::widget::image::Handle> },
+    ThumbnailsLoaded(Vec<(usize, PathBuf, (u32, u32), Option<iced::widget::image::Handle>)>),
+    PreviewLoaded { idx: usize, handle: Option<iced::widget::image::Handle>, dimensions: (u32, u32) },
+    Tick,
 }
 
 fn make_placeholder_thumbnail() -> iced::widget::image::Handle {
@@ -94,32 +112,8 @@ fn generate_with_sips(src_path: &std::path::Path, dest_path: &std::path::Path, m
     }
 }
 
-fn get_raw_dimensions(path: &std::path::Path) -> Option<(u32, u32)> {
-    let file = std::fs::File::open(path).ok()?;
-    let mut bufreader = std::io::BufReader::new(file);
-    let exifreader = Reader::new();
-    let exif = exifreader.read_from_container(&mut bufreader).ok()?;
-    
-    let width = exif.get_field(Tag::PixelXDimension, In::PRIMARY)
-        .or_else(|| exif.get_field(Tag::ImageWidth, In::PRIMARY))?
-        .value.get_uint(0)?;
-        
-    let height = exif.get_field(Tag::PixelYDimension, In::PRIMARY)
-        .or_else(|| exif.get_field(Tag::ImageLength, In::PRIMARY))?
-        .value.get_uint(0)?;
-        
-    let orientation = exif.get_field(Tag::Orientation, In::PRIMARY)
-        .and_then(|f| f.value.get_uint(0))
-        .unwrap_or(1);
-        
-    if orientation == 5 || orientation == 6 || orientation == 7 || orientation == 8 {
-        Some((height, width))
-    } else {
-        Some((width, height))
-    }
-}
 
-fn ensure_raw_assets(path: &std::path::Path, thumb_path: &std::path::Path, preview_path: &std::path::Path) -> ((u32, u32), Option<iced::widget::image::Handle>) {
+fn ensure_raw_thumbnail(path: &std::path::Path, thumb_path: &std::path::Path) -> ((u32, u32), Option<iced::widget::image::Handle>) {
     let mut dims = (0, 0);
     let mut extracted_thumb = false;
     
@@ -187,23 +181,23 @@ fn ensure_raw_assets(path: &std::path::Path, thumb_path: &std::path::Path, previ
         let _ = generate_with_sips(path, thumb_path, Some(256));
     }
     
-    // 4. Ensure high-resolution preview exists (generate using sips without resizing)
-    if !preview_path.exists() {
-        if let Some(parent) = preview_path.parent() {
-            let _ = std::fs::create_dir_all(parent);
+    let mut handle = None;
+    let mut decoded_dims = (0, 0);
+    
+    if thumb_path.exists() {
+        if let Ok(img) = ::image::open(thumb_path) {
+            let rgba = img.to_rgba8();
+            let (w, h) = rgba.dimensions();
+            decoded_dims = (w, h);
+            handle = Some(iced::widget::image::Handle::from_rgba(w, h, rgba.into_raw()));
+        } else {
+            handle = Some(iced::widget::image::Handle::from_path(thumb_path));
         }
-        let _ = generate_with_sips(path, preview_path, None);
     }
     
-    let handle = if thumb_path.exists() {
-        Some(iced::widget::image::Handle::from_path(thumb_path))
-    } else {
-        None
-    };
-    
     let final_dims = if dims == (0, 0) {
-        if preview_path.exists() {
-            ::image::image_dimensions(preview_path).unwrap_or((0, 0))
+        if decoded_dims != (0, 0) {
+            decoded_dims
         } else if thumb_path.exists() {
             ::image::image_dimensions(thumb_path).unwrap_or((0, 0))
         } else {
@@ -216,6 +210,74 @@ fn ensure_raw_assets(path: &std::path::Path, thumb_path: &std::path::Path, previ
     (final_dims, handle)
 }
 
+fn ensure_raw_preview(path: &std::path::Path, preview_path: &std::path::Path) -> bool {
+    if preview_path.exists() {
+        return true;
+    }
+    if let Some(parent) = preview_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    generate_with_sips(path, preview_path, None)
+}
+
+fn get_spinner_char(tick: usize) -> &'static str {
+    let frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+    frames[tick % frames.len()]
+}
+
+
+#[derive(Clone)]
+struct HashableArc<T>(Arc<T>);
+
+impl<T> std::hash::Hash for HashableArc<T> {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        Arc::as_ptr(&self.0).hash(state);
+    }
+}
+impl<T> PartialEq for HashableArc<T> {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+impl<T> Eq for HashableArc<T> {}
+
+fn make_stream(rx: &HashableArc<TokioMutex<UnboundedReceiver<Message>>>) -> futures::stream::BoxStream<'static, Message> {
+    use futures::StreamExt;
+    let rx_clone = rx.0.clone();
+    futures::stream::unfold(rx_clone, |rx| async move {
+        let mut rx_guard = rx.lock().await;
+        let first_msg = rx_guard.recv().await;
+        
+        if let Some(msg) = first_msg {
+            match msg {
+                Message::ThumbnailLoaded { idx, path, dimensions, handle } => {
+                    // Sleep for 30ms to allow more thumbnails to accumulate in the channel buffer
+                    tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+                    
+                    let mut batch = vec![(idx, path, dimensions, handle)];
+                    while let Ok(next_msg) = rx_guard.try_recv() {
+                        match next_msg {
+                            Message::ThumbnailLoaded { idx, path, dimensions, handle } => {
+                                batch.push((idx, path, dimensions, handle));
+                            }
+                            _ => {}
+                        }
+                    }
+                    drop(rx_guard);
+                    Some((Message::ThumbnailsLoaded(batch), rx))
+                }
+                other => {
+                    drop(rx_guard);
+                    Some((other, rx))
+                }
+            }
+        } else {
+            drop(rx_guard);
+            None
+        }
+    }).boxed()
+}
+
 
 impl State {
     pub fn new(config: &Config) -> Self {
@@ -225,6 +287,80 @@ impl State {
             grid_pane,
             PaneState::Preview,
         ).unwrap();
+
+        let (tx, rx) = std::sync::mpsc::channel::<ThumbnailRequest>();
+        let rx = std::sync::Arc::new(std::sync::Mutex::new(rx));
+        
+        let (result_tx, result_rx) = tokio::sync::mpsc::unbounded_channel::<Message>();
+        let result_rx = std::sync::Arc::new(tokio::sync::Mutex::new(result_rx));
+        
+        for i in 0..2 {
+            let rx_clone = rx.clone();
+            let result_tx_clone = result_tx.clone();
+            std::thread::spawn(move || {
+                loop {
+                    let req = {
+                        let lock = match rx_clone.lock() {
+                            Ok(guard) => guard,
+                            Err(_) => break,
+                        };
+                        match lock.recv() {
+                            Ok(req) => req,
+                            Err(_) => break,
+                        }
+                    };
+                    
+                    println!("[Worker {}] Started processing item {} ({})", i, req.idx, req.filename);
+                    
+                    let ext = req.path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+                    let is_raw = ["raw", "cr2", "nef", "arw"].contains(&ext.as_str());
+                    
+                    let thumb_path = req.cache_dir.join(format!("{}.jpg", req.filename));
+                    
+                    let (dimensions, mut handle) = if is_raw {
+                        ensure_raw_thumbnail(&req.path, &thumb_path)
+                    } else {
+                        if !thumb_path.exists() {
+                            let sips_success = generate_with_sips(&req.path, &thumb_path, Some(256));
+                            if !sips_success {
+                                if let Ok(img) = ::image::open(&req.path) {
+                                    let thumb = img.thumbnail(256, 256);
+                                    let _ = thumb.save(&thumb_path);
+                                }
+                            }
+                        }
+                        let mut final_handle = None;
+                        let mut final_dims = (0, 0);
+                        if thumb_path.exists() {
+                            if let Ok(img) = ::image::open(&thumb_path) {
+                                let rgba = img.to_rgba8();
+                                let (w, h) = rgba.dimensions();
+                                final_dims = (w, h);
+                                final_handle = Some(iced::widget::image::Handle::from_rgba(w, h, rgba.into_raw()));
+                            } else {
+                                final_handle = Some(iced::widget::image::Handle::from_path(&thumb_path));
+                            }
+                        }
+                        (final_dims, final_handle)
+                    };
+                    
+                    if handle.is_none() {
+                        handle = Some(make_placeholder_thumbnail());
+                    }
+                    
+                    println!("[Worker {}] Finished processing item {} ({})", i, req.idx, req.filename);
+                    let _ = result_tx_clone.send(Message::ThumbnailLoaded {
+                        idx: req.idx,
+                        path: req.path,
+                        dimensions,
+                        handle,
+                    });
+                    
+                    // Yield a little bit to prevent CPU starvation of the main thread
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+            });
+        }
 
         Self {
             status: "No images to sort".to_string(),
@@ -236,6 +372,11 @@ impl State {
             is_loading: false,
             preview_viewer: ViewerState::default(),
             preview_is_fit: true,
+            spinner_tick: 0,
+            preview_loading: false,
+            preview_handle: None,
+            thumbnail_sender: tx,
+            result_rx,
         }
     }
 
@@ -244,18 +385,86 @@ impl State {
         self.library_dir = config.library_dir.clone();
     }
 
+    fn trigger_preview_load(&mut self, idx: usize) -> Task<Message> {
+        if idx >= self.items.len() {
+            self.preview_loading = false;
+            self.preview_handle = None;
+            return Task::none();
+        }
+        
+        let item = &self.items[idx];
+        let ext = item.path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+        let is_raw = ["raw", "cr2", "nef", "arw"].contains(&ext.as_str());
+        
+        self.preview_loading = true;
+        self.preview_handle = None;
+        
+        let path = item.path.clone();
+        let to_sort_dir = self.to_sort_dir.clone();
+        let filename = item.filename.clone();
+        
+        Task::perform(
+            async move {
+                let (tx, rx) = futures::channel::oneshot::channel();
+                std::thread::spawn(move || {
+                    let mut loaded_handle = None;
+                    let mut loaded_dims = (0, 0);
+                    
+                    if is_raw {
+                        if let Some(to_sort) = to_sort_dir {
+                            let preview_path = to_sort.join(".thumbnail_cache").join(format!("{}_preview.jpg", filename));
+                            let thumb_path = to_sort.join(".thumbnail_cache").join(format!("{}.jpg", filename));
+                            
+                            let success = ensure_raw_preview(&path, &preview_path);
+                            let target_path = if success && preview_path.exists() {
+                                Some(preview_path)
+                            } else if thumb_path.exists() {
+                                Some(thumb_path)
+                            } else {
+                                None
+                            };
+                            
+                            if let Some(t_path) = target_path {
+                                if let Ok(img) = ::image::open(&t_path) {
+                                    let img = img.to_rgba8();
+                                    loaded_dims = img.dimensions();
+                                    loaded_handle = Some(iced::widget::image::Handle::from_rgba(
+                                        loaded_dims.0,
+                                        loaded_dims.1,
+                                        img.into_raw(),
+                                    ));
+                                }
+                            }
+                        }
+                    } else {
+                        if let Ok(img) = ::image::open(&path) {
+                            let img = img.to_rgba8();
+                            loaded_dims = img.dimensions();
+                            loaded_handle = Some(iced::widget::image::Handle::from_rgba(
+                                loaded_dims.0,
+                                loaded_dims.1,
+                                img.into_raw(),
+                            ));
+                        }
+                    }
+                    let _ = tx.send((idx, loaded_handle, loaded_dims));
+                });
+                rx.await.unwrap_or_else(|_| (idx, None, (0, 0)))
+            },
+            |(idx, handle, dimensions)| Message::PreviewLoaded { idx, handle, dimensions }
+        )
+    }
+
     pub fn refresh(&mut self, config: &Config) -> Task<Message> {
         self.update_config(config);
         
         if let Some(to_sort) = &self.to_sort_dir {
             let dir = to_sort.clone();
-            self.is_loading = true;
-            self.status = "Loading photos...".to_string();
+            self.status = "Scanning photos...".to_string();
             
             Task::perform(
                 async move {
                     let mut found = Vec::new();
-                    let cache_dir = dir.join(".thumbnail_cache");
                     if let Ok(entries) = std::fs::read_dir(&dir) {
                         let mut paths = Vec::new();
                         for entry in entries.flatten() {
@@ -278,40 +487,7 @@ impl State {
                             let metadata = fs::metadata(&path).ok();
                             let file_size_bytes = metadata.map(|m| m.len()).unwrap_or(0);
                             let filename = path.file_name().unwrap_or_default().to_string_lossy().to_string();
-                            
-                            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
-                            let is_raw = ["raw", "cr2", "nef", "arw"].contains(&ext.as_str());
-                            
-                            let thumb_path = cache_dir.join(format!("{}.jpg", filename));
-                            let preview_path = cache_dir.join(format!("{}_preview.jpg", filename));
-                            
-                            let (orig_dimensions, handle) = if is_raw {
-                                if thumb_path.exists() && preview_path.exists() {
-                                    let dims = get_raw_dimensions(&path).unwrap_or((0, 0));
-                                    (dims, iced::widget::image::Handle::from_path(&thumb_path))
-                                } else {
-                                    let (dims, opt_h) = ensure_raw_assets(&path, &thumb_path, &preview_path);
-                                    let h = opt_h.unwrap_or_else(make_placeholder_thumbnail);
-                                    (dims, h)
-                                }
-                            } else {
-                                let dims = ::image::image_dimensions(&path).unwrap_or((0, 0));
-                                let h = if thumb_path.exists() {
-                                    iced::widget::image::Handle::from_path(&thumb_path)
-                                } else {
-                                    make_placeholder_thumbnail()
-                                };
-                                (dims, h)
-                            };
-                            
-                            found.push(SortItem {
-                                path,
-                                filename,
-                                file_size_bytes,
-                                dimensions: orig_dimensions,
-                                thumbnail: handle,
-                                action: SortAction::Unsorted,
-                            });
+                            found.push((path, filename, file_size_bytes));
                         }
                     }
                     found
@@ -333,84 +509,24 @@ impl State {
             Message::RefreshThumbnails => {
                 if let Some(to_sort) = &self.to_sort_dir {
                     let dir = to_sort.clone();
-                    self.is_loading = true;
                     self.status = "Regenerating thumbnail cache...".to_string();
+                    
+                    // Clear all thumbnails immediately in UI to show spinners
+                    for item in &mut self.items {
+                        item.thumbnail = None;
+                    }
+                    
+                    // Grab current items' metadata to pass to Refreshed once cache is cleared
+                    let current_metadata: Vec<(PathBuf, String, u64)> = self.items.iter()
+                        .map(|item| (item.path.clone(), item.filename.clone(), item.file_size_bytes))
+                        .collect();
                     
                     Task::perform(
                         async move {
                             let cache_dir = dir.join(".thumbnail_cache");
                             let _ = std::fs::remove_dir_all(&cache_dir);
                             let _ = std::fs::create_dir_all(&cache_dir);
-                            
-                            let mut found = Vec::new();
-                            if let Ok(entries) = std::fs::read_dir(&dir) {
-                                let mut paths = Vec::new();
-                                for entry in entries.flatten() {
-                                    let path = entry.path();
-                                    if path.components().any(|c| c.as_os_str() == ".thumbnail_cache") {
-                                        continue;
-                                    }
-                                    if path.is_file() {
-                                        if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-                                            let ext = ext.to_lowercase();
-                                            if ["jpg", "jpeg", "png", "bmp", "tiff", "webp", "raw", "cr2", "nef", "arw"].contains(&ext.as_str()) {
-                                                paths.push(path);
-                                            }
-                                        }
-                                    }
-                                }
-                                paths.sort();
-                                
-                                for path in paths {
-                                    let metadata = fs::metadata(&path).ok();
-                                    let file_size_bytes = metadata.map(|m| m.len()).unwrap_or(0);
-                                    let filename = path.file_name().unwrap_or_default().to_string_lossy().to_string();
-                                    
-                                    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
-                                    let is_raw = ["raw", "cr2", "nef", "arw"].contains(&ext.as_str());
-                                    
-                                    let thumb_path = cache_dir.join(format!("{}.jpg", filename));
-                                    let preview_path = cache_dir.join(format!("{}_preview.jpg", filename));
-                                    
-                                    let (orig_dimensions, handle) = if is_raw {
-                                        let (dims, opt_h) = ensure_raw_assets(&path, &thumb_path, &preview_path);
-                                        let h = opt_h.unwrap_or_else(make_placeholder_thumbnail);
-                                        (dims, h)
-                                    } else if let Ok(img) = ::image::open(&path) {
-                                        let dims = img.dimensions();
-                                        let thumb = img.thumbnail(256, 256);
-                                        let h = if thumb.save(&thumb_path).is_ok() {
-                                            iced::widget::image::Handle::from_path(&thumb_path)
-                                        } else {
-                                            let rgba = thumb.to_rgba8();
-                                            let dimensions = rgba.dimensions();
-                                            iced::widget::image::Handle::from_rgba(
-                                                dimensions.0, 
-                                                dimensions.1, 
-                                                rgba.into_raw()
-                                            )
-                                        };
-                                        (dims, h)
-                                    } else {
-                                        let h = if thumb_path.exists() {
-                                            iced::widget::image::Handle::from_path(&thumb_path)
-                                        } else {
-                                            make_placeholder_thumbnail()
-                                        };
-                                        ((0, 0), h)
-                                    };
-                                    
-                                    found.push(SortItem {
-                                        path,
-                                        filename,
-                                        file_size_bytes,
-                                        dimensions: orig_dimensions,
-                                        thumbnail: handle,
-                                        action: SortAction::Unsorted,
-                                    });
-                                }
-                            }
-                            found
+                            current_metadata
                         },
                         Message::Refreshed
                     )
@@ -419,18 +535,80 @@ impl State {
                     Task::none()
                 }
             }
-            Message::Refreshed(items) => {
-                self.items = items;
+            Message::Refreshed(items_meta) => {
+                println!("[Main] Refreshed received with {} items", items_meta.len());
+                self.items = items_meta.into_iter().map(|(path, filename, file_size_bytes)| {
+                    SortItem {
+                        path,
+                        filename,
+                        file_size_bytes,
+                        dimensions: (0, 0),
+                        thumbnail: None,
+                        action: SortAction::Unsorted,
+                    }
+                }).collect();
                 self.selected_index = if self.items.is_empty() { None } else { Some(0) };
                 self.is_loading = false;
                 self.update_status();
+                
+                if let Some(to_sort) = &self.to_sort_dir {
+                    let cache_dir = to_sort.join(".thumbnail_cache");
+                    let _ = std::fs::create_dir_all(&cache_dir);
+                    
+                    println!("[Main] Queuing {} thumbnail generation requests", self.items.len());
+                    for (idx, item) in self.items.iter().enumerate() {
+                        let req = ThumbnailRequest {
+                            idx,
+                            path: item.path.clone(),
+                            filename: item.filename.clone(),
+                            cache_dir: cache_dir.clone(),
+                        };
+                        let _ = self.thumbnail_sender.send(req);
+                    }
+                }
+                
+                if let Some(idx) = self.selected_index {
+                    self.trigger_preview_load(idx)
+                } else {
+                    Task::none()
+                }
+            }
+            Message::ThumbnailLoaded { idx, path, dimensions, handle } => {
+                println!("[Main] ThumbnailLoaded received for item {} ({:?})", idx, path.file_name());
+                if idx < self.items.len() && self.items[idx].path == path {
+                    self.items[idx].dimensions = dimensions;
+                    self.items[idx].thumbnail = handle;
+                }
+                Task::none()
+            }
+            Message::ThumbnailsLoaded(batch) => {
+                println!("[Main] ThumbnailsLoaded received batch of {} items", batch.len());
+                for (idx, path, dimensions, handle) in batch {
+                    if idx < self.items.len() && self.items[idx].path == path {
+                        self.items[idx].dimensions = dimensions;
+                        self.items[idx].thumbnail = handle;
+                    }
+                }
+                Task::none()
+            }
+            Message::PreviewLoaded { idx, handle, dimensions } => {
+                if let Some(current_idx) = self.selected_index {
+                    if current_idx == idx {
+                        self.preview_handle = handle;
+                        self.preview_loading = false;
+                        if idx < self.items.len() && dimensions != (0, 0) {
+                            self.items[idx].dimensions = dimensions;
+                        }
+                    }
+                }
                 Task::none()
             }
             Message::Select(index) => {
                 self.selected_index = Some(index);
                 self.preview_is_fit = true;
                 self.preview_viewer = ViewerState::default();
-                Task::none()
+                self.preview_handle = None;
+                self.trigger_preview_load(index)
             }
             Message::ZoomIn => {
                 let bounds = self.preview_viewer.bounds.lock().unwrap().unwrap_or(iced::Size::new(100.0, 100.0));
@@ -537,6 +715,10 @@ impl State {
                 self.update_status();
                 Task::none()
             }
+            Message::Tick => {
+                self.spinner_tick = self.spinner_tick.wrapping_add(1);
+                Task::none()
+            }
         }
     }
 
@@ -560,7 +742,7 @@ impl State {
     }
 
     pub fn subscription(&self) -> Subscription<Message> {
-        if self.preview_viewer.is_dragging {
+        let drag_sub = if self.preview_viewer.is_dragging {
             iced::event::listen_with(|event, _status, _window| {
                 match event {
                     iced::Event::Mouse(iced::mouse::Event::CursorMoved { position }) => {
@@ -574,7 +756,24 @@ impl State {
             })
         } else {
             Subscription::none()
-        }
+        };
+
+        let rx_hashable = HashableArc(self.result_rx.clone());
+        let result_sub = Subscription::run_with(
+            rx_hashable,
+            make_stream,
+        );
+
+        let needs_tick = self.preview_loading || self.items.iter().any(|item| item.thumbnail.is_none());
+        
+        let tick_sub = if needs_tick {
+            iced::time::every(std::time::Duration::from_millis(150))
+                .map(|_| Message::Tick)
+        } else {
+            Subscription::none()
+        };
+
+        Subscription::batch(vec![drag_sub, result_sub, tick_sub])
     }
 
     fn update_status(&mut self) {
@@ -599,48 +798,74 @@ impl State {
                     for (idx, item) in self.items.iter().enumerate() {
                         let is_selected = self.selected_index == Some(idx);
                         
-                        let img = image(item.thumbnail.clone())
-                            .width(Length::Fixed(150.0))
-                            .height(Length::Fixed(150.0));
+                        let content_stack = if let Some(handle) = &item.thumbnail {
+                            let img = image(handle.clone())
+                                .width(Length::Fixed(150.0))
+                                .height(Length::Fixed(150.0));
+                                
+                            let circle_color = match item.action {
+                                SortAction::Keep => Some(iced::Color::from_rgb(0.0, 1.0, 0.0)),
+                                SortAction::Discard => Some(iced::Color::from_rgb(1.0, 0.0, 0.0)),
+                                SortAction::Unsorted => None,
+                            };
                             
-                        let circle_color = match item.action {
-                            SortAction::Keep => Some(iced::Color::from_rgb(0.0, 1.0, 0.0)),
-                            SortAction::Discard => Some(iced::Color::from_rgb(1.0, 0.0, 0.0)),
-                            SortAction::Unsorted => None,
-                        };
-                        
-                        // We use a Column if stack is not available, but let's try iced::widget::stack
-                        // Actually, Iced 0.14 added `Stack` widget. Let's try it.
-                        let mut stack_children = vec![img.into()];
-                        
-                        if let Some(color) = circle_color {
-                            let indicator = container(iced::widget::Space::new().width(20.0).height(20.0))
-                                .style(move |_theme: &iced::Theme| iced::widget::container::Style {
-                                    background: Some(iced::Background::Color(color)),
+                            let mut stack_children = vec![img.into()];
+                            
+                            if let Some(color) = circle_color {
+                                let indicator = container(iced::widget::Space::new().width(20.0).height(20.0))
+                                    .style(move |_theme: &iced::Theme| iced::widget::container::Style {
+                                        background: Some(iced::Background::Color(color)),
+                                        border: iced::Border {
+                                            radius: 0.0.into(),
+                                            ..iced::Border::default()
+                                        },
+                                        ..iced::widget::container::Style::default()
+                                    });
+                                    
+                                let overlay = container(indicator)
+                                    .width(Length::Fill)
+                                    .height(Length::Fill)
+                                    .align_x(iced::alignment::Horizontal::Right)
+                                    .align_y(iced::alignment::Vertical::Bottom)
+                                    .padding(5);
+                                    
+                                stack_children.push(overlay.into());
+                            }
+                            
+                            iced::widget::stack(stack_children)
+                                .width(Length::Fixed(150.0))
+                                .height(Length::Fixed(150.0))
+                        } else {
+                            let spinner = get_spinner_char(self.spinner_tick);
+                            let placeholder = container(
+                                column![
+                                    text(spinner).size(24).font(bold_font()),
+                                    text("LOADING...").size(10).font(bold_font()),
+                                ]
+                                .spacing(8)
+                                .align_x(Alignment::Center)
+                            )
+                            .width(Length::Fixed(150.0))
+                            .height(Length::Fixed(150.0))
+                            .align_x(iced::alignment::Horizontal::Center)
+                            .align_y(iced::alignment::Vertical::Center)
+                            .style(move |theme: &iced::Theme| {
+                                let bg = theme.palette().background;
+                                iced::widget::container::Style {
+                                    background: Some(iced::Background::Color(bg)),
                                     border: iced::Border {
+                                        color: iced::Color::from_rgb(0.5, 0.5, 0.5),
+                                        width: 1.0,
                                         radius: 0.0.into(),
-                                        ..iced::Border::default()
                                     },
                                     ..iced::widget::container::Style::default()
-                                });
-                                
-                            let overlay = container(indicator)
-                                .width(Length::Fill)
-                                .height(Length::Fill)
-                                .align_x(iced::alignment::Horizontal::Right)
-                                .align_y(iced::alignment::Vertical::Bottom)
-                                .padding(5);
-                                
-                            stack_children.push(overlay.into());
-                        }
-                        
-                        // Fallback to manual layout if stack fails, but let's try `stack` macro or `Stack::with_children`
-                        // Actually `stack!` might not be imported or available. Let's use a standard wrapper for now to test.
-                        // I will use `iced::widget::stack` function if it exists.
-                        // For safety, let's use `iced::widget::stack(stack_children)`
-                        let content_stack = iced::widget::stack(stack_children)
-                            .width(Length::Fixed(150.0))
-                            .height(Length::Fixed(150.0));
+                                }
+                            });
+                            
+                            iced::widget::stack(vec![placeholder.into()])
+                                .width(Length::Fixed(150.0))
+                                .height(Length::Fixed(150.0))
+                        };
                         
                         let styled_container = container(content_stack)
                             .padding(4)
@@ -672,7 +897,6 @@ impl State {
                         
                         let content = button(styled_container)
                             .padding(0)
-                            // Button styling in iced 0.14 for transparent background:
                             .style(iced::widget::button::text)
                             .on_press(Message::Select(idx));
                         
@@ -724,45 +948,56 @@ impl State {
                             
                             preview_col = preview_col.push(details_card);
                             
-                            let ext = item.path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
-                            let is_raw = ["raw", "cr2", "nef", "arw"].contains(&ext.as_str());
-                            
-                            let preview_handle = if is_raw {
-                                if let Some(to_sort) = &self.to_sort_dir {
-                                    let preview_path = to_sort.join(".thumbnail_cache").join(format!("{}_preview.jpg", item.filename));
-                                    let thumb_path = to_sort.join(".thumbnail_cache").join(format!("{}.jpg", item.filename));
-                                    
-                                    if preview_path.exists() {
-                                        image::Handle::from_path(preview_path)
-                                    } else if thumb_path.exists() {
-                                        image::Handle::from_path(thumb_path)
-                                    } else {
-                                        make_placeholder_thumbnail()
-                                    }
+                            let canvas_area: Element<'_, Message> = if self.preview_loading {
+                                let ext = item.path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+                                let is_raw = ["raw", "cr2", "nef", "arw"].contains(&ext.as_str());
+                                let needs_dev = is_raw && self.to_sort_dir.as_ref().map(|to_sort| {
+                                    !to_sort.join(".thumbnail_cache").join(format!("{}_preview.jpg", item.filename)).exists()
+                                }).unwrap_or(true);
+                                
+                                let spinner_text = if needs_dev {
+                                    "DEVELOPING RAW IMAGE..."
                                 } else {
-                                    make_placeholder_thumbnail()
-                                }
+                                    "LOADING PREVIEW..."
+                                };
+                                
+                                let spinner = get_spinner_char(self.spinner_tick);
+                                container(
+                                    column![
+                                        text(spinner).size(48).font(bold_font()),
+                                        text(spinner_text).size(14).font(bold_font()),
+                                    ]
+                                    .spacing(15)
+                                    .align_x(Alignment::Center)
+                                )
+                                .width(Length::Fill)
+                                .height(Length::FillPortion(5))
+                                .align_x(iced::alignment::Horizontal::Center)
+                                .align_y(iced::alignment::Vertical::Center)
+                                .style(brutalist_card_style)
+                                .into()
                             } else {
-                                image::Handle::from_path(item.path.clone())
-                            };
-                            
-                            let preview_dimensions = if item.dimensions == (0, 0) {
-                                (256, 256)
-                            } else {
-                                item.dimensions
-                            };
+                                let preview_handle = self.preview_handle.clone().unwrap_or_else(make_placeholder_thumbnail);
+                                
+                                let preview_dimensions = if item.dimensions == (0, 0) {
+                                    (256, 256)
+                                } else {
+                                    item.dimensions
+                                };
 
-                            let canvas_widget = canvas(PreviewCanvas {
-                                handle: preview_handle,
-                                dimensions: preview_dimensions,
-                                state: &self.preview_viewer,
-                                is_fit: self.preview_is_fit,
-                            })
-                            .width(Length::Fill)
-                            .height(Length::FillPortion(5));
+                                let canvas_widget = canvas(PreviewCanvas {
+                                    handle: preview_handle,
+                                    dimensions: preview_dimensions,
+                                    state: &self.preview_viewer,
+                                    is_fit: self.preview_is_fit,
+                                })
+                                .width(Length::Fill)
+                                .height(Length::FillPortion(5));
+                                
+                                Element::from(canvas_widget).map(Message::ViewerMessage)
+                            };
                             
-                            let mapped_canvas = Element::from(canvas_widget).map(Message::ViewerMessage);
-                            preview_col = preview_col.push(mapped_canvas);
+                            preview_col = preview_col.push(canvas_area);
                             
                             // Controls
                             let zoom_controls = row![
@@ -830,7 +1065,21 @@ impl State {
         ].spacing(10);
         
         if self.is_loading {
-            main_col = main_col.push(text("PROCESSING... PLEASE WAIT.").font(bold_font()).size(14));
+            let spinner = get_spinner_char(self.spinner_tick);
+            let loader = container(
+                column![
+                    text(spinner).size(48).font(bold_font()),
+                    text("PROCESSING... PLEASE WAIT.").font(bold_font()).size(14),
+                ]
+                .spacing(15)
+                .align_x(Alignment::Center)
+            )
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .align_x(iced::alignment::Horizontal::Center)
+            .align_y(iced::alignment::Vertical::Center);
+            
+            main_col = main_col.push(loader);
         } else {
             main_col = main_col.push(
                 container(pane_grid)
