@@ -101,20 +101,23 @@ impl PhotoSortApp {
         let tabs = iced_aw::Tabs::new(Message::TabSelected)
             .push(
                 Tab::Import,
-                iced_aw::TabLabel::Text("Import".to_string()),
+                iced_aw::TabLabel::Text("IMPORT".to_string()),
                 self.import_state.view().map(Message::ImportMessage),
             )
             .push(
                 Tab::Sort,
-                iced_aw::TabLabel::Text("Sort".to_string()),
+                iced_aw::TabLabel::Text("SORT".to_string()),
                 self.sort_state.view().map(Message::SortMessage),
             )
             .push(
                 Tab::Settings,
-                iced_aw::TabLabel::Text("Settings".to_string()),
+                iced_aw::TabLabel::Text("SETTINGS".to_string()),
                 self.settings_state.view().map(Message::SettingsMessage),
             )
-            .set_active_tab(&self.active_tab);
+            .set_active_tab(&self.active_tab)
+            .text_font(theme::bold_font())
+            .text_size(16.0)
+            .tab_bar_style(theme::brutalist_tab_bar_style);
 
         container(tabs)
             .width(Length::Fill)

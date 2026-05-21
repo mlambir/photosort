@@ -1,8 +1,9 @@
-use iced::widget::{button, column, text, row, progress_bar};
-use iced::{Element, Task};
+use iced::widget::{button, column, text, row, progress_bar, container};
+use iced::{Element, Task, Length};
 use crate::core::config::Config;
 use crate::core::photo::Photo;
 use crate::core::importer::Importer;
+use crate::ui::theme::{brutalist_button_style, brutalist_light_button_style, bold_font, brutalist_card_style, brutalist_card_shadow_style};
 use std::path::PathBuf;
 
 pub struct State {
@@ -104,22 +105,62 @@ impl State {
     }
 
     pub fn view(&self) -> Element<'_, Message> {
-        let mut col = column![
-            text("Import Photos").size(24),
+        let mut import_info = column![
             row![
-                button("Select Source").on_press(Message::SelectSource),
-                text(self.source_dir.as_ref().map(|p| p.to_string_lossy().to_string()).unwrap_or_else(|| "None".to_string()))
-            ].spacing(5),
-            text(&self.status),
-        ].spacing(10);
+                button(text("SELECT SOURCE").font(bold_font()))
+                    .on_press(Message::SelectSource)
+                    .padding(10)
+                    .style(brutalist_button_style),
+                iced::widget::Space::new().width(10),
+                text(self.source_dir.as_ref().map(|p| p.to_string_lossy().to_string()).unwrap_or_else(|| "NONE".to_string()))
+                    .font(bold_font())
+                    .size(14)
+            ].align_y(iced::Alignment::Center),
+            text(self.status.to_uppercase()).font(bold_font()).size(14),
+        ].spacing(15);
 
         if !self.photos_to_import.is_empty() && !self.is_importing {
-            col = col.push(button("Start Import").on_press(Message::StartImport));
+            import_info = import_info.push(
+                button(text("START IMPORT").font(bold_font()))
+                    .on_press(Message::StartImport)
+                    .padding(iced::Padding {
+                        top: 12.0,
+                        bottom: 12.0,
+                        left: 24.0,
+                        right: 24.0,
+                    })
+                    .style(brutalist_light_button_style)
+            );
         } else if self.is_importing {
-            col = col.push(button("Importing..."));
-            col = col.push(progress_bar(0.0..=1.0, self.import_progress));
+            import_info = import_info.push(
+                button(text("IMPORTING...").font(bold_font()))
+                    .padding(10)
+                    .style(brutalist_button_style)
+            );
+            import_info = import_info.push(progress_bar(0.0..=1.0, self.import_progress));
         }
 
-        col.into()
+        let inner_card = container(import_info)
+            .padding(20)
+            .width(Length::Fill)
+            .style(brutalist_card_style);
+
+        let card = container(inner_card)
+            .width(Length::Fill)
+            .padding(iced::Padding {
+                top: 0.0,
+                left: 0.0,
+                bottom: 8.0,
+                right: 8.0,
+            })
+            .style(brutalist_card_shadow_style);
+
+        column![
+            text("IMPORT PHOTOS").font(bold_font()).size(28),
+            card
+        ]
+        .spacing(20)
+        .padding(20)
+        .into()
     }
 }

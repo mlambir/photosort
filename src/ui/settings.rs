@@ -1,7 +1,8 @@
-use iced::widget::{button, column, text, row, radio};
-use iced::{Element, Task};
+use iced::widget::{button, column, text, row, radio, container};
+use iced::{Element, Task, Length};
 use std::path::PathBuf;
 use crate::core::config::{Config, AppTheme};
+use crate::ui::theme::{brutalist_button_style, bold_font, brutalist_radio_style, brutalist_card_style, brutalist_card_shadow_style};
 
 pub struct State {
     to_sort_dir: Option<PathBuf>,
@@ -80,23 +81,62 @@ impl State {
     }
 
     pub fn view(&self) -> Element<'_, Message> {
+        let settings_info = column![
+            row![
+                text(format!("TO SORT: {:?}", self.to_sort_dir.as_ref().map(|p| p.to_string_lossy().to_string()).unwrap_or_else(|| "NOT SET".to_string())))
+                    .font(bold_font())
+                    .size(14),
+                iced::widget::Space::new().width(Length::Fill),
+                button(text("CHANGE").font(bold_font()))
+                    .on_press(Message::SelectToSortDir)
+                    .padding(8)
+                    .style(brutalist_button_style),
+            ].align_y(iced::Alignment::Center),
+            
+            row![
+                text(format!("LIBRARY: {:?}", self.library_dir.as_ref().map(|p| p.to_string_lossy().to_string()).unwrap_or_else(|| "NOT SET".to_string())))
+                    .font(bold_font())
+                    .size(14),
+                iced::widget::Space::new().width(Length::Fill),
+                button(text("CHANGE").font(bold_font()))
+                    .on_press(Message::SelectLibraryDir)
+                    .padding(8)
+                    .style(brutalist_button_style),
+            ].align_y(iced::Alignment::Center),
+            
+            iced::widget::Space::new().height(10),
+            text("THEME").font(bold_font()).size(16),
+            row![
+                radio("Light", AppTheme::Light, Some(self.theme), Message::ThemeToggled)
+                    .font(bold_font())
+                    .style(brutalist_radio_style),
+                radio("Dark", AppTheme::Dark, Some(self.theme), Message::ThemeToggled)
+                    .font(bold_font())
+                    .style(brutalist_radio_style),
+            ].spacing(20)
+        ].spacing(20);
+
+        let inner_card = container(settings_info)
+            .padding(20)
+            .width(Length::Fill)
+            .style(brutalist_card_style);
+
+        let card = container(inner_card)
+            .width(Length::Fill)
+            .padding(iced::Padding {
+                top: 0.0,
+                left: 0.0,
+                bottom: 8.0,
+                right: 8.0,
+            })
+            .style(brutalist_card_shadow_style);
+
         column![
-            text("Settings").size(24),
-            row![
-                text(format!("To Sort Directory: {:?}", self.to_sort_dir)),
-                button("Change").on_press(Message::SelectToSortDir),
-            ].spacing(5),
-            row![
-                text(format!("Library Directory: {:?}", self.library_dir)),
-                button("Change").on_press(Message::SelectLibraryDir),
-            ].spacing(5),
-            text("Theme").size(16),
-            row![
-                radio("Light", AppTheme::Light, Some(self.theme), Message::ThemeToggled),
-                radio("Dark", AppTheme::Dark, Some(self.theme), Message::ThemeToggled),
-            ].spacing(15)
+            text("SETTINGS").font(bold_font()).size(28),
+            card
         ]
-        .spacing(10)
+        .spacing(20)
+        .padding(20)
         .into()
     }
 }

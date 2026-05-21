@@ -3,6 +3,7 @@ use iced::{Element, Task, Length, Alignment, Subscription};
 use iced::widget::pane_grid::PaneGrid;
 use crate::core::config::Config;
 use crate::ui::viewer::{self, ViewerState, PreviewCanvas};
+use crate::ui::theme::{brutalist_button_style, brutalist_light_button_style, bold_font, brutalist_card_style, brutalist_card_shadow_style};
 use std::path::PathBuf;
 use std::fs;
 use ::image::GenericImageView;
@@ -435,7 +436,7 @@ impl State {
                         
                         if let Some(color) = circle_color {
                             let indicator = container(iced::widget::Space::new().width(20.0).height(20.0))
-                                .style(move |_theme| iced::widget::container::Style {
+                                .style(move |_theme: &iced::Theme| iced::widget::container::Style {
                                     background: Some(iced::Background::Color(color)),
                                     border: iced::Border {
                                         radius: 0.0.into(),
@@ -462,21 +463,32 @@ impl State {
                             .width(Length::Fixed(150.0))
                             .height(Length::Fixed(150.0));
                         
-                        let border_color = if is_selected {
-                            iced::Color::from_rgb(0.0, 0.5, 1.0)
-                        } else {
-                            iced::Color::TRANSPARENT
-                        };
-                        
                         let styled_container = container(content_stack)
-                            .padding(2)
-                            .style(move |_theme| iced::widget::container::Style {
-                                border: iced::Border {
-                                    color: border_color,
-                                    width: if is_selected { 3.0 } else { 0.0 },
-                                    radius: 0.0.into(),
-                                },
-                                ..iced::widget::container::Style::default()
+                            .padding(4)
+                            .style(move |theme: &iced::Theme| {
+                                let bg = theme.palette().background;
+                                
+                                if is_selected {
+                                    iced::widget::container::Style {
+                                        background: Some(iced::Background::Color(bg)),
+                                        border: iced::Border {
+                                            color: crate::ui::theme::HOT_PINK, // Hot Pink
+                                            width: 4.0,
+                                            radius: 0.0.into(),
+                                        },
+                                        ..iced::widget::container::Style::default()
+                                    }
+                                } else {
+                                    iced::widget::container::Style {
+                                        background: Some(iced::Background::Color(bg)),
+                                        border: iced::Border {
+                                            color: iced::Color::TRANSPARENT,
+                                            width: 0.0,
+                                            radius: 0.0.into(),
+                                        },
+                                        ..iced::widget::container::Style::default()
+                                    }
+                                }
                             });
                         
                         let content = button(styled_container)
@@ -502,13 +514,36 @@ impl State {
                             let item = &self.items[idx];
                             
                             // File Details Header
-                            let details = column![
-                                text(format!("File: {}", item.filename)).size(16),
-                                text(format!("Size: {:.2} MB", item.file_size_bytes as f64 / 1_048_576.0)).size(14),
-                                text(format!("Dimensions: {} x {}", item.dimensions.0, item.dimensions.1)).size(14),
-                            ].spacing(5).align_x(Alignment::Center);
+                            let inner_details = container(
+                                column![
+                                    text(format!("FILE: {}", item.filename.to_uppercase()))
+                                        .size(14)
+                                        .font(bold_font()),
+                                    text(format!("SIZE: {:.2} MB", item.file_size_bytes as f64 / 1_048_576.0))
+                                        .size(12)
+                                        .font(bold_font()),
+                                    text(format!("DIMENSIONS: {} X {}", item.dimensions.0, item.dimensions.1))
+                                        .size(12)
+                                        .font(bold_font()),
+                                ]
+                                .spacing(6)
+                                .align_x(Alignment::Start)
+                            )
+                            .padding(12)
+                            .width(Length::Fill)
+                            .style(brutalist_card_style);
+
+                            let details_card = container(inner_details)
+                                .width(Length::Fill)
+                                .padding(iced::Padding {
+                                    top: 0.0,
+                                    left: 0.0,
+                                    bottom: 6.0,
+                                    right: 6.0,
+                                })
+                                .style(brutalist_card_shadow_style);
                             
-                            preview_col = preview_col.push(details);
+                            preview_col = preview_col.push(details_card);
                             
                             let canvas_widget = canvas(PreviewCanvas {
                                 handle: image::Handle::from_path(item.path.clone()),
@@ -524,15 +559,33 @@ impl State {
                             
                             // Controls
                             let zoom_controls = row![
-                                button("Zoom Out (-)").on_press(Message::ZoomOut),
-                                button("Reset").on_press(Message::ResetZoom),
-                                button("Zoom In (+)").on_press(Message::ZoomIn),
+                                button(text("ZOOM OUT (-)").font(bold_font()))
+                                    .padding(8)
+                                    .style(brutalist_button_style)
+                                    .on_press(Message::ZoomOut),
+                                button(text("RESET").font(bold_font()))
+                                    .padding(8)
+                                    .style(brutalist_button_style)
+                                    .on_press(Message::ResetZoom),
+                                button(text("ZOOM IN (+)").font(bold_font()))
+                                    .padding(8)
+                                    .style(brutalist_button_style)
+                                    .on_press(Message::ZoomIn),
                             ].spacing(10);
                             
                             let actions = row![
-                                button("Discard").on_press(Message::SetAction(SortAction::Discard)),
-                                button("Unsorted").on_press(Message::SetAction(SortAction::Unsorted)),
-                                button("Keep").on_press(Message::SetAction(SortAction::Keep)),
+                                button(text("DISCARD").font(bold_font()))
+                                    .padding(10)
+                                    .style(brutalist_button_style)
+                                    .on_press(Message::SetAction(SortAction::Discard)),
+                                button(text("UNSORTED").font(bold_font()))
+                                    .padding(10)
+                                    .style(brutalist_button_style)
+                                    .on_press(Message::SetAction(SortAction::Unsorted)),
+                                button(text("KEEP").font(bold_font()))
+                                    .padding(10)
+                                    .style(brutalist_light_button_style)
+                                    .on_press(Message::SetAction(SortAction::Keep)),
                             ].spacing(20);
                             
                             preview_col = preview_col.push(zoom_controls);
@@ -551,25 +604,26 @@ impl State {
         .on_resize(10.0, Message::Resized);
 
         let mut header = row![
-            text("Sort Photos").size(24),
+            text("SORT PHOTOS").font(bold_font()).size(28),
         ].spacing(10).align_y(Alignment::Center);
         
         if !self.is_loading {
             header = header.push(iced::widget::Space::new().width(Length::Fill));
             header = header.push(
-                button("Refresh Thumbnails")
+                button(text("REFRESH THUMBNAILS").font(bold_font()))
                     .on_press(Message::RefreshThumbnails)
                     .padding(8)
+                    .style(brutalist_button_style)
             );
         }
 
         let mut main_col = column![
             header,
-            text(&self.status),
+            text(self.status.to_uppercase()).font(bold_font()).size(14),
         ].spacing(10);
         
         if self.is_loading {
-            main_col = main_col.push(text("Processing... please wait."));
+            main_col = main_col.push(text("PROCESSING... PLEASE WAIT.").font(bold_font()).size(14));
         } else {
             main_col = main_col.push(
                 container(pane_grid)
@@ -579,14 +633,24 @@ impl State {
             
             if !self.items.is_empty() {
                 main_col = main_col.push(
-                    container(button("Apply Changes").on_press(Message::ApplyChanges))
-                        .width(Length::Fill)
-                        .padding(10)
-                        .align_x(Alignment::Center)
+                    container(
+                        button(text("APPLY CHANGES").font(bold_font()))
+                            .on_press(Message::ApplyChanges)
+                            .padding(iced::Padding {
+                                top: 12.0,
+                                bottom: 12.0,
+                                left: 24.0,
+                                right: 24.0,
+                            })
+                            .style(brutalist_light_button_style)
+                    )
+                    .width(Length::Fill)
+                    .padding(10)
+                    .align_x(Alignment::Center)
                 );
             }
         }
 
-        main_col.into()
+        main_col.padding(20).into()
     }
 }
