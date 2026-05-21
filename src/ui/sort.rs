@@ -90,6 +90,32 @@ fn make_placeholder_thumbnail() -> iced::widget::image::Handle {
     iced::widget::image::Handle::from_rgba(width, height, pixels)
 }
 
+fn get_exif_orientation(path: &std::path::Path) -> u32 {
+    if let Ok(file) = std::fs::File::open(path) {
+        let mut bufreader = std::io::BufReader::new(file);
+        let exifreader = Reader::new();
+        if let Ok(exif) = exifreader.read_from_container(&mut bufreader) {
+            if let Some(field) = exif.get_field(Tag::Orientation, In::PRIMARY) {
+                return field.value.get_uint(0).unwrap_or(1);
+            }
+        }
+    }
+    1
+}
+
+fn apply_exif_orientation(img: ::image::DynamicImage, orientation: u32) -> ::image::DynamicImage {
+    match orientation {
+        2 => img.fliph(),
+        3 => img.rotate180(),
+        4 => img.flipv(),
+        5 => img.fliph().rotate270(),
+        6 => img.rotate90(),
+        7 => img.fliph().rotate90(),
+        8 => img.rotate270(),
+        _ => img,
+    }
+}
+
 fn generate_with_sips(src_path: &std::path::Path, dest_path: &std::path::Path, max_dimension: Option<u32>) -> bool {
     let mut cmd = std::process::Command::new("sips");
     cmd.arg("-s")
@@ -115,7 +141,6 @@ fn generate_with_sips(src_path: &std::path::Path, dest_path: &std::path::Path, m
 
 fn ensure_raw_thumbnail(path: &std::path::Path, thumb_path: &std::path::Path) -> ((u32, u32), Option<iced::widget::image::Handle>) {
     let mut dims = (0, 0);
-    let mut extracted_thumb = false;
     
     if let Ok(file) = std::fs::File::open(path) {
         let mut bufreader = std::io::BufReader::new(file);
@@ -143,38 +168,11 @@ fn ensure_raw_thumbnail(path: &std::path::Path, thumb_path: &std::path::Path) ->
                     dims = (w, h);
                 }
             }
-            
-            // 2. Try to extract EXIF thumbnail if not portrait and thumb_path doesn't exist
-            if !is_portrait && !thumb_path.exists() {
-                let offset = exif.get_field(Tag::JPEGInterchangeFormat, In::THUMBNAIL)
-                    .and_then(|f| f.value.get_uint(0));
-                let length = exif.get_field(Tag::JPEGInterchangeFormatLength, In::THUMBNAIL)
-                    .and_then(|f| f.value.get_uint(0));
-                    
-                if let (Some(offset), Some(length)) = (offset, length) {
-                    use std::io::{Seek, SeekFrom, Read};
-                    if let Ok(mut file) = std::fs::File::open(path) {
-                        if file.seek(SeekFrom::Start(offset as u64)).is_ok() {
-                            let mut buffer = vec![0u8; length as usize];
-                            if file.read_exact(&mut buffer).is_ok() {
-                                if let Some(parent) = thumb_path.parent() {
-                                    let _ = std::fs::create_dir_all(parent);
-                                }
-                                if std::fs::write(thumb_path, &buffer).is_ok() {
-                                    extracted_thumb = true;
-                                }
-                            }
-                        }
-                    }
-                }
-            } else if thumb_path.exists() {
-                extracted_thumb = true;
-            }
         }
     }
     
-    // 3. Fallback to generating 256px thumbnail using sips if not present/extracted
-    if !thumb_path.exists() && !extracted_thumb {
+    // Always generate thumbnail using sips if not present
+    if !thumb_path.exists() {
         if let Some(parent) = thumb_path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
@@ -186,6 +184,8 @@ fn ensure_raw_thumbnail(path: &std::path::Path, thumb_path: &std::path::Path) ->
     
     if thumb_path.exists() {
         if let Ok(img) = ::image::open(thumb_path) {
+            let orientation = get_exif_orientation(thumb_path);
+            let img = apply_exif_orientation(img, orientation);
             let rgba = img.to_rgba8();
             let (w, h) = rgba.dimensions();
             decoded_dims = (w, h);
@@ -324,6 +324,8 @@ impl State {
                             let sips_success = generate_with_sips(&req.path, &thumb_path, Some(256));
                             if !sips_success {
                                 if let Ok(img) = ::image::open(&req.path) {
+                                    let orientation = get_exif_orientation(&req.path);
+                                    let img = apply_exif_orientation(img, orientation);
                                     let thumb = img.thumbnail(256, 256);
                                     let _ = thumb.save(&thumb_path);
                                 }
@@ -333,6 +335,8 @@ impl State {
                         let mut final_dims = (0, 0);
                         if thumb_path.exists() {
                             if let Ok(img) = ::image::open(&thumb_path) {
+                                let orientation = get_exif_orientation(&thumb_path);
+                                let img = apply_exif_orientation(img, orientation);
                                 let rgba = img.to_rgba8();
                                 let (w, h) = rgba.dimensions();
                                 final_dims = (w, h);
@@ -426,6 +430,8 @@ impl State {
                             
                             if let Some(t_path) = target_path {
                                 if let Ok(img) = ::image::open(&t_path) {
+                                    let orientation = get_exif_orientation(&t_path);
+                                    let img = apply_exif_orientation(img, orientation);
                                     let img = img.to_rgba8();
                                     loaded_dims = img.dimensions();
                                     loaded_handle = Some(iced::widget::image::Handle::from_rgba(
@@ -438,6 +444,8 @@ impl State {
                         }
                     } else {
                         if let Ok(img) = ::image::open(&path) {
+                            let orientation = get_exif_orientation(&path);
+                            let img = apply_exif_orientation(img, orientation);
                             let img = img.to_rgba8();
                             loaded_dims = img.dimensions();
                             loaded_handle = Some(iced::widget::image::Handle::from_rgba(
