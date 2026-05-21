@@ -1,6 +1,5 @@
-use iced::widget::{button, column, row, text, image, container, pane_grid, scrollable, canvas};
+use iced::widget::{button, column, row, text, image, container, scrollable, canvas};
 use iced::{Element, Task, Length, Alignment, Subscription};
-use iced::widget::pane_grid::PaneGrid;
 use crate::core::config::Config;
 use crate::ui::viewer::{self, ViewerState, PreviewCanvas};
 use crate::ui::theme::{brutalist_button_style, brutalist_light_button_style, bold_font, brutalist_card_style, brutalist_card_shadow_style};
@@ -41,7 +40,6 @@ pub struct State {
     selected_index: Option<usize>,
     to_sort_dir: Option<PathBuf>,
     library_dir: Option<PathBuf>,
-    panes: pane_grid::State<PaneState>,
     is_loading: bool,
     preview_viewer: ViewerState,
     preview_is_fit: bool,
@@ -52,15 +50,8 @@ pub struct State {
     result_rx: Arc<TokioMutex<UnboundedReceiver<Message>>>,
 }
 
-#[derive(Debug, Clone, Copy)]
-pub enum PaneState {
-    Grid,
-    Preview,
-}
-
 #[derive(Debug, Clone)]
 pub enum Message {
-    Resized(pane_grid::ResizeEvent),
     Refreshed(Vec<(PathBuf, String, u64)>),
     Select(usize),
     SetAction(SortAction),
@@ -75,6 +66,10 @@ pub enum Message {
     ThumbnailsLoaded(Vec<(usize, PathBuf, (u32, u32), Option<iced::widget::image::Handle>)>),
     PreviewLoaded { idx: usize, handle: Option<iced::widget::image::Handle>, dimensions: (u32, u32) },
     Tick,
+    PrevImage,
+    NextImage,
+    ToggleKeep,
+    ToggleDiscard,
 }
 
 fn make_placeholder_thumbnail() -> iced::widget::image::Handle {
@@ -281,12 +276,6 @@ fn make_stream(rx: &HashableArc<TokioMutex<UnboundedReceiver<Message>>>) -> futu
 
 impl State {
     pub fn new(config: &Config) -> Self {
-        let (mut panes, grid_pane) = pane_grid::State::new(PaneState::Grid);
-        let (_preview_pane, _) = panes.split(
-            pane_grid::Axis::Vertical,
-            grid_pane,
-            PaneState::Preview,
-        ).unwrap();
 
         let (tx, rx) = std::sync::mpsc::channel::<ThumbnailRequest>();
         let rx = std::sync::Arc::new(std::sync::Mutex::new(rx));
@@ -372,7 +361,6 @@ impl State {
             selected_index: None,
             to_sort_dir: config.to_sort_dir.clone(),
             library_dir: config.library_dir.clone(),
-            panes,
             is_loading: false,
             preview_viewer: ViewerState::default(),
             preview_is_fit: true,
@@ -510,10 +498,6 @@ impl State {
 
     pub fn update(&mut self, message: Message, _config: &Config) -> Task<Message> {
         match message {
-            Message::Resized(pane_grid::ResizeEvent { split, ratio }) => {
-                self.panes.resize(split, ratio);
-                Task::none()
-            }
             Message::RefreshThumbnails => {
                 if let Some(to_sort) = &self.to_sort_dir {
                     let dir = to_sort.clone();
@@ -666,6 +650,53 @@ impl State {
             Message::SetAction(action) => {
                 if let Some(idx) = self.selected_index {
                     self.items[idx].action = action;
+                    self.update_status();
+                }
+                Task::none()
+            }
+            Message::PrevImage => {
+                if let Some(idx) = self.selected_index {
+                    if idx > 0 {
+                        self.selected_index = Some(idx - 1);
+                        self.preview_is_fit = true;
+                        self.preview_viewer = ViewerState::default();
+                        self.preview_handle = None;
+                        return self.trigger_preview_load(idx - 1);
+                    }
+                }
+                Task::none()
+            }
+            Message::NextImage => {
+                if let Some(idx) = self.selected_index {
+                    if idx + 1 < self.items.len() {
+                        self.selected_index = Some(idx + 1);
+                        self.preview_is_fit = true;
+                        self.preview_viewer = ViewerState::default();
+                        self.preview_handle = None;
+                        return self.trigger_preview_load(idx + 1);
+                    }
+                }
+                Task::none()
+            }
+            Message::ToggleKeep => {
+                if let Some(idx) = self.selected_index {
+                    if self.items[idx].action == SortAction::Keep {
+                        self.items[idx].action = SortAction::Unsorted;
+                    } else {
+                        self.items[idx].action = SortAction::Keep;
+                    }
+                    self.update_status();
+                }
+                Task::none()
+            }
+            Message::ToggleDiscard => {
+                if let Some(idx) = self.selected_index {
+                    if self.items[idx].action == SortAction::Discard {
+                        self.items[idx].action = SortAction::Unsorted;
+                    } else {
+                        self.items[idx].action = SortAction::Discard;
+                    }
+                    self.update_status();
                 }
                 Task::none()
             }
@@ -766,6 +797,29 @@ impl State {
             Subscription::none()
         };
 
+        let keyboard_sub = iced::event::listen_with(|event, _status, _window| {
+            match event {
+                iced::Event::Keyboard(iced::keyboard::Event::KeyPressed { key, .. }) => {
+                    match key {
+                        iced::keyboard::Key::Named(iced::keyboard::key::Named::ArrowLeft) => {
+                            Some(Message::PrevImage)
+                        }
+                        iced::keyboard::Key::Named(iced::keyboard::key::Named::ArrowRight) => {
+                            Some(Message::NextImage)
+                        }
+                        iced::keyboard::Key::Named(iced::keyboard::key::Named::ArrowUp) => {
+                            Some(Message::ToggleKeep)
+                        }
+                        iced::keyboard::Key::Named(iced::keyboard::key::Named::ArrowDown) => {
+                            Some(Message::ToggleDiscard)
+                        }
+                        _ => None,
+                    }
+                }
+                _ => None,
+            }
+        });
+
         let rx_hashable = HashableArc(self.result_rx.clone());
         let result_sub = Subscription::run_with(
             rx_hashable,
@@ -781,7 +835,7 @@ impl State {
             Subscription::none()
         };
 
-        Subscription::batch(vec![drag_sub, result_sub, tick_sub])
+        Subscription::batch(vec![drag_sub, keyboard_sub, result_sub, tick_sub])
     }
 
     fn update_status(&mut self) {
@@ -796,263 +850,6 @@ impl State {
     }
 
     pub fn view(&self) -> Element<'_, Message> {
-        let pane_grid = PaneGrid::new(&self.panes, |_pane, state, _| {
-            match state {
-                PaneState::Grid => {
-                    let mut wrap = iced_aw::Wrap::new()
-                        .spacing(10.0)
-                        .line_spacing(10.0);
-                    
-                    for (idx, item) in self.items.iter().enumerate() {
-                        let is_selected = self.selected_index == Some(idx);
-                        
-                        let content_stack = if let Some(handle) = &item.thumbnail {
-                            let img = image(handle.clone())
-                                .width(Length::Fixed(150.0))
-                                .height(Length::Fixed(150.0));
-                                
-                            let circle_color = match item.action {
-                                SortAction::Keep => Some(iced::Color::from_rgb(0.0, 1.0, 0.0)),
-                                SortAction::Discard => Some(iced::Color::from_rgb(1.0, 0.0, 0.0)),
-                                SortAction::Unsorted => None,
-                            };
-                            
-                            let mut stack_children = vec![img.into()];
-                            
-                            if let Some(color) = circle_color {
-                                let indicator = container(iced::widget::Space::new().width(20.0).height(20.0))
-                                    .style(move |_theme: &iced::Theme| iced::widget::container::Style {
-                                        background: Some(iced::Background::Color(color)),
-                                        border: iced::Border {
-                                            radius: 0.0.into(),
-                                            ..iced::Border::default()
-                                        },
-                                        ..iced::widget::container::Style::default()
-                                    });
-                                    
-                                let overlay = container(indicator)
-                                    .width(Length::Fill)
-                                    .height(Length::Fill)
-                                    .align_x(iced::alignment::Horizontal::Right)
-                                    .align_y(iced::alignment::Vertical::Bottom)
-                                    .padding(5);
-                                    
-                                stack_children.push(overlay.into());
-                            }
-                            
-                            iced::widget::stack(stack_children)
-                                .width(Length::Fixed(150.0))
-                                .height(Length::Fixed(150.0))
-                        } else {
-                            let spinner = get_spinner_char(self.spinner_tick);
-                            let placeholder = container(
-                                column![
-                                    text(spinner).size(24).font(bold_font()),
-                                    text("LOADING...").size(10).font(bold_font()),
-                                ]
-                                .spacing(8)
-                                .align_x(Alignment::Center)
-                            )
-                            .width(Length::Fixed(150.0))
-                            .height(Length::Fixed(150.0))
-                            .align_x(iced::alignment::Horizontal::Center)
-                            .align_y(iced::alignment::Vertical::Center)
-                            .style(move |theme: &iced::Theme| {
-                                let bg = theme.palette().background;
-                                iced::widget::container::Style {
-                                    background: Some(iced::Background::Color(bg)),
-                                    border: iced::Border {
-                                        color: iced::Color::from_rgb(0.5, 0.5, 0.5),
-                                        width: 1.0,
-                                        radius: 0.0.into(),
-                                    },
-                                    ..iced::widget::container::Style::default()
-                                }
-                            });
-                            
-                            iced::widget::stack(vec![placeholder.into()])
-                                .width(Length::Fixed(150.0))
-                                .height(Length::Fixed(150.0))
-                        };
-                        
-                        let styled_container = container(content_stack)
-                            .padding(4)
-                            .style(move |theme: &iced::Theme| {
-                                let bg = theme.palette().background;
-                                
-                                if is_selected {
-                                    iced::widget::container::Style {
-                                        background: Some(iced::Background::Color(bg)),
-                                        border: iced::Border {
-                                            color: crate::ui::theme::HOT_PINK, // Hot Pink
-                                            width: 4.0,
-                                            radius: 0.0.into(),
-                                        },
-                                        ..iced::widget::container::Style::default()
-                                    }
-                                } else {
-                                    iced::widget::container::Style {
-                                        background: Some(iced::Background::Color(bg)),
-                                        border: iced::Border {
-                                            color: iced::Color::TRANSPARENT,
-                                            width: 0.0,
-                                            radius: 0.0.into(),
-                                        },
-                                        ..iced::widget::container::Style::default()
-                                    }
-                                }
-                            });
-                        
-                        let content = button(styled_container)
-                            .padding(0)
-                            .style(iced::widget::button::text)
-                            .on_press(Message::Select(idx));
-                        
-                        wrap = wrap.push(content);
-                    }
-                    
-                    let grid_view = scrollable(container(wrap).padding(10))
-                        .width(Length::Fill)
-                        .height(Length::Fill);
-                        
-                    pane_grid::Content::new(grid_view)
-                }
-                PaneState::Preview => {
-                    let mut preview_col = column![].spacing(10).align_x(Alignment::Center);
-                    
-                    if let Some(idx) = self.selected_index {
-                        if idx < self.items.len() {
-                            let item = &self.items[idx];
-                            
-                            // File Details Header
-                            let inner_details = container(
-                                column![
-                                    text(format!("FILE: {}", item.filename.to_uppercase()))
-                                        .size(14)
-                                        .font(bold_font()),
-                                    text(format!("SIZE: {:.2} MB", item.file_size_bytes as f64 / 1_048_576.0))
-                                        .size(12)
-                                        .font(bold_font()),
-                                    text(format!("DIMENSIONS: {} X {}", item.dimensions.0, item.dimensions.1))
-                                        .size(12)
-                                        .font(bold_font()),
-                                ]
-                                .spacing(6)
-                                .align_x(Alignment::Start)
-                            )
-                            .padding(12)
-                            .width(Length::Fill)
-                            .style(brutalist_card_style);
-
-                            let details_card = container(inner_details)
-                                .width(Length::Fill)
-                                .padding(iced::Padding {
-                                    top: 0.0,
-                                    left: 0.0,
-                                    bottom: 6.0,
-                                    right: 6.0,
-                                })
-                                .style(brutalist_card_shadow_style);
-                            
-                            preview_col = preview_col.push(details_card);
-                            
-                            let canvas_area: Element<'_, Message> = if self.preview_loading {
-                                let ext = item.path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
-                                let is_raw = ["raw", "cr2", "nef", "arw"].contains(&ext.as_str());
-                                let needs_dev = is_raw && self.to_sort_dir.as_ref().map(|to_sort| {
-                                    !to_sort.join(".thumbnail_cache").join(format!("{}_preview.jpg", item.filename)).exists()
-                                }).unwrap_or(true);
-                                
-                                let spinner_text = if needs_dev {
-                                    "DEVELOPING RAW IMAGE..."
-                                } else {
-                                    "LOADING PREVIEW..."
-                                };
-                                
-                                let spinner = get_spinner_char(self.spinner_tick);
-                                container(
-                                    column![
-                                        text(spinner).size(48).font(bold_font()),
-                                        text(spinner_text).size(14).font(bold_font()),
-                                    ]
-                                    .spacing(15)
-                                    .align_x(Alignment::Center)
-                                )
-                                .width(Length::Fill)
-                                .height(Length::FillPortion(5))
-                                .align_x(iced::alignment::Horizontal::Center)
-                                .align_y(iced::alignment::Vertical::Center)
-                                .style(brutalist_card_style)
-                                .into()
-                            } else {
-                                let preview_handle = self.preview_handle.clone().unwrap_or_else(make_placeholder_thumbnail);
-                                
-                                let preview_dimensions = if item.dimensions == (0, 0) {
-                                    (256, 256)
-                                } else {
-                                    item.dimensions
-                                };
-
-                                let canvas_widget = canvas(PreviewCanvas {
-                                    handle: preview_handle,
-                                    dimensions: preview_dimensions,
-                                    state: &self.preview_viewer,
-                                    is_fit: self.preview_is_fit,
-                                })
-                                .width(Length::Fill)
-                                .height(Length::FillPortion(5));
-                                
-                                Element::from(canvas_widget).map(Message::ViewerMessage)
-                            };
-                            
-                            preview_col = preview_col.push(canvas_area);
-                            
-                            // Controls
-                            let zoom_controls = row![
-                                button(text("ZOOM OUT (-)").font(bold_font()))
-                                    .padding(8)
-                                    .style(brutalist_button_style)
-                                    .on_press(Message::ZoomOut),
-                                button(text("RESET").font(bold_font()))
-                                    .padding(8)
-                                    .style(brutalist_button_style)
-                                    .on_press(Message::ResetZoom),
-                                button(text("ZOOM IN (+)").font(bold_font()))
-                                    .padding(8)
-                                    .style(brutalist_button_style)
-                                    .on_press(Message::ZoomIn),
-                            ].spacing(10);
-                            
-                            let actions = row![
-                                button(text("DISCARD").font(bold_font()))
-                                    .padding(10)
-                                    .style(brutalist_button_style)
-                                    .on_press(Message::SetAction(SortAction::Discard)),
-                                button(text("UNSORTED").font(bold_font()))
-                                    .padding(10)
-                                    .style(brutalist_button_style)
-                                    .on_press(Message::SetAction(SortAction::Unsorted)),
-                                button(text("KEEP").font(bold_font()))
-                                    .padding(10)
-                                    .style(brutalist_light_button_style)
-                                    .on_press(Message::SetAction(SortAction::Keep)),
-                            ].spacing(20);
-                            
-                            preview_col = preview_col.push(zoom_controls);
-                            preview_col = preview_col.push(actions);
-                        }
-                    } else {
-                        preview_col = preview_col.push(text("No image selected"));
-                    }
-                    
-                    pane_grid::Content::new(container(preview_col).padding(10).width(Length::Fill).height(Length::Fill))
-                }
-            }
-        })
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .on_resize(10.0, Message::Resized);
-
         let mut header = row![
             text("SORT PHOTOS").font(bold_font()).size(28),
         ].spacing(10).align_y(Alignment::Center);
@@ -1070,7 +867,7 @@ impl State {
         let mut main_col = column![
             header,
             text(self.status.to_uppercase()).font(bold_font()).size(14),
-        ].spacing(10);
+        ].spacing(15);
         
         if self.is_loading {
             let spinner = get_spinner_char(self.spinner_tick);
@@ -1089,15 +886,148 @@ impl State {
             
             main_col = main_col.push(loader);
         } else {
-            main_col = main_col.push(
-                container(pane_grid)
+            // Left Side: Preview Area
+            let preview_area: Element<'_, Message> = if let Some(idx) = self.selected_index {
+                if idx < self.items.len() {
+                    let item = &self.items[idx];
+                    if self.preview_loading {
+                        let ext = item.path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+                        let is_raw = ["raw", "cr2", "nef", "arw"].contains(&ext.as_str());
+                        let needs_dev = is_raw && self.to_sort_dir.as_ref().map(|to_sort| {
+                            !to_sort.join(".thumbnail_cache").join(format!("{}_preview.jpg", item.filename)).exists()
+                        }).unwrap_or(true);
+                        
+                        let spinner_text = if needs_dev {
+                            "DEVELOPING RAW IMAGE..."
+                        } else {
+                            "LOADING PREVIEW..."
+                        };
+                        
+                        let spinner = get_spinner_char(self.spinner_tick);
+                        container(
+                            column![
+                                text(spinner).size(48).font(bold_font()),
+                                text(spinner_text).size(14).font(bold_font()),
+                            ]
+                            .spacing(15)
+                            .align_x(Alignment::Center)
+                        )
+                        .width(Length::Fill)
+                        .height(Length::Fill)
+                        .align_x(iced::alignment::Horizontal::Center)
+                        .align_y(iced::alignment::Vertical::Center)
+                        .style(brutalist_card_style)
+                        .into()
+                    } else {
+                        let preview_handle = self.preview_handle.clone().unwrap_or_else(make_placeholder_thumbnail);
+                        let preview_dimensions = if item.dimensions == (0, 0) {
+                            (256, 256)
+                        } else {
+                            item.dimensions
+                        };
+                        
+                        let canvas_widget = canvas(PreviewCanvas {
+                            handle: preview_handle,
+                            dimensions: preview_dimensions,
+                            state: &self.preview_viewer,
+                            is_fit: self.preview_is_fit,
+                        })
+                        .width(Length::Fill)
+                        .height(Length::Fill);
+                        
+                        Element::from(canvas_widget).map(Message::ViewerMessage)
+                    }
+                } else {
+                    container(text("No image selected").size(16).font(bold_font()))
+                        .width(Length::Fill)
+                        .height(Length::Fill)
+                        .align_x(iced::alignment::Horizontal::Center)
+                        .align_y(iced::alignment::Vertical::Center)
+                        .style(brutalist_card_style)
+                        .into()
+                }
+            } else {
+                container(text("No images to sort").size(16).font(bold_font()))
                     .width(Length::Fill)
-                    .height(Length::FillPortion(5))
-            );
-            
-            if !self.items.is_empty() {
-                main_col = main_col.push(
-                    container(
+                    .height(Length::Fill)
+                    .align_x(iced::alignment::Horizontal::Center)
+                    .align_y(iced::alignment::Vertical::Center)
+                    .style(brutalist_card_style)
+                    .into()
+            };
+
+            // Right Side: Control Panel
+            let control_panel: Element<'_, Message> = if let Some(idx) = self.selected_index {
+                if idx < self.items.len() {
+                    let item = &self.items[idx];
+                    
+                    let inner_details = container(
+                        column![
+                            text(format!("FILE: {}", item.filename.to_uppercase()))
+                                .size(14)
+                                .font(bold_font()),
+                            text(format!("SIZE: {:.2} MB", item.file_size_bytes as f64 / 1_048_576.0))
+                                .size(12)
+                                .font(bold_font()),
+                            text(format!("DIMENSIONS: {} X {}", item.dimensions.0, item.dimensions.1))
+                                .size(12)
+                                .font(bold_font()),
+                        ]
+                        .spacing(6)
+                        .align_x(Alignment::Start)
+                    )
+                    .padding(12)
+                    .width(Length::Fill)
+                    .style(brutalist_card_style);
+                    
+                    let details_card = container(inner_details)
+                        .width(Length::Fill)
+                        .padding(iced::Padding {
+                            top: 0.0,
+                            left: 0.0,
+                            bottom: 6.0,
+                            right: 6.0,
+                        })
+                        .style(brutalist_card_shadow_style);
+                        
+                    let zoom_controls = row![
+                        button(text("ZOOM OUT (-)").font(bold_font()))
+                            .padding(8)
+                            .style(brutalist_button_style)
+                            .on_press(Message::ZoomOut),
+                        button(text("RESET").font(bold_font()))
+                            .padding(8)
+                            .style(brutalist_button_style)
+                            .on_press(Message::ResetZoom),
+                        button(text("ZOOM IN (+)").font(bold_font()))
+                            .padding(8)
+                            .style(brutalist_button_style)
+                            .on_press(Message::ZoomIn),
+                    ].spacing(10);
+                    
+                    let actions = row![
+                        button(text("DISCARD").font(bold_font()))
+                            .padding(10)
+                            .style(brutalist_button_style)
+                            .on_press(Message::SetAction(SortAction::Discard)),
+                        button(text("UNSORTED").font(bold_font()))
+                            .padding(10)
+                            .style(brutalist_button_style)
+                            .on_press(Message::SetAction(SortAction::Unsorted)),
+                        button(text("KEEP").font(bold_font()))
+                            .padding(10)
+                            .style(brutalist_light_button_style)
+                            .on_press(Message::SetAction(SortAction::Keep)),
+                    ].spacing(20);
+                    
+                    let panel_col = column![
+                        details_card,
+                        text("ZOOM PREVIEW").font(bold_font()).size(12),
+                        zoom_controls,
+                        iced::widget::Space::new().height(10.0),
+                        text("SORT ACTION").font(bold_font()).size(12),
+                        actions,
+                        iced::widget::Space::new().height(Length::Fill),
                         button(text("APPLY CHANGES").font(bold_font()))
                             .on_press(Message::ApplyChanges)
                             .padding(iced::Padding {
@@ -1106,12 +1036,183 @@ impl State {
                                 left: 24.0,
                                 right: 24.0,
                             })
+                            .width(Length::Fill)
                             .style(brutalist_light_button_style)
-                    )
+                    ]
+                    .spacing(15)
+                    .align_x(Alignment::Center);
+                    
+                    container(panel_col)
+                        .width(Length::Fixed(350.0))
+                        .height(Length::Fill)
+                        .into()
+                } else {
+                    container(iced::widget::Space::new())
+                        .width(Length::Fixed(350.0))
+                        .height(Length::Fill)
+                        .into()
+                }
+            } else {
+                container(iced::widget::Space::new())
+                    .width(Length::Fixed(350.0))
+                    .height(Length::Fill)
+                    .into()
+            };
+
+            let workspace = row![
+                preview_area,
+                iced::widget::Space::new().width(15.0),
+                control_panel,
+            ]
+            .width(Length::Fill)
+            .height(Length::Fill);
+
+            main_col = main_col.push(workspace);
+
+            // Bottom filmstrip of thumbnails
+            if !self.items.is_empty() {
+                let divider = container(iced::widget::Space::new().height(3.0))
                     .width(Length::Fill)
-                    .padding(10)
-                    .align_x(Alignment::Center)
-                );
+                    .style(move |theme: &iced::Theme| {
+                        let is_dark = theme.palette().background.r < 0.5;
+                        let line_color = if is_dark { crate::ui::theme::PAPER_WHITE } else { crate::ui::theme::CHARCOAL_DEEP };
+                        iced::widget::container::Style {
+                            background: Some(iced::Background::Color(line_color)),
+                            ..iced::widget::container::Style::default()
+                        }
+                    });
+                
+                main_col = main_col.push(iced::widget::Space::new().height(10.0));
+                main_col = main_col.push(divider);
+                main_col = main_col.push(iced::widget::Space::new().height(10.0));
+
+                let mut filmstrip = row![].spacing(10);
+                
+                for (idx, item) in self.items.iter().enumerate() {
+                    let is_selected = self.selected_index == Some(idx);
+                    
+                    let content_stack = if let Some(handle) = &item.thumbnail {
+                        let img = image(handle.clone())
+                            .width(Length::Fixed(120.0))
+                            .height(Length::Fixed(120.0));
+                            
+                        let (circle_color, text_val) = match item.action {
+                            SortAction::Keep => (Some(iced::Color::from_rgb(0.12, 0.8, 0.43)), "K"),
+                            SortAction::Discard => (Some(iced::Color::from_rgb(0.9, 0.2, 0.25)), "D"),
+                            SortAction::Unsorted => (None, ""),
+                        };
+                        
+                        let mut stack_children = vec![img.into()];
+                        
+                        if let Some(color) = circle_color {
+                            let indicator = container(
+                                text(text_val)
+                                    .size(9)
+                                    .font(bold_font())
+                                    .color(iced::Color::BLACK)
+                            )
+                            .padding(iced::Padding {
+                                top: 2.0,
+                                bottom: 2.0,
+                                left: 6.0,
+                                right: 6.0,
+                            })
+                            .style(move |_theme: &iced::Theme| iced::widget::container::Style {
+                                background: Some(iced::Background::Color(color)),
+                                border: iced::Border {
+                                    color: iced::Color::BLACK,
+                                    width: 1.5,
+                                    radius: 0.0.into(),
+                                },
+                                ..iced::widget::container::Style::default()
+                            });
+                                
+                            let overlay = container(indicator)
+                                .width(Length::Fill)
+                                .height(Length::Fill)
+                                .align_x(iced::alignment::Horizontal::Right)
+                                .align_y(iced::alignment::Vertical::Bottom)
+                                .padding(6);
+                                
+                            stack_children.push(overlay.into());
+                        }
+                        
+                        iced::widget::stack(stack_children)
+                            .width(Length::Fixed(120.0))
+                            .height(Length::Fixed(120.0))
+                    } else {
+                        let spinner = get_spinner_char(self.spinner_tick);
+                        let placeholder = container(
+                            column![
+                                text(spinner).size(20).font(bold_font()),
+                                text("LOADING...").size(8).font(bold_font()),
+                            ]
+                            .spacing(6)
+                            .align_x(Alignment::Center)
+                        )
+                        .width(Length::Fixed(120.0))
+                        .height(Length::Fixed(120.0))
+                        .align_x(iced::alignment::Horizontal::Center)
+                        .align_y(iced::alignment::Vertical::Center)
+                        .style(move |theme: &iced::Theme| {
+                            let bg = theme.palette().background;
+                            iced::widget::container::Style {
+                                background: Some(iced::Background::Color(bg)),
+                                border: iced::Border {
+                                    color: iced::Color::from_rgb(0.5, 0.5, 0.5),
+                                    width: 1.0,
+                                    radius: 0.0.into(),
+                                },
+                                ..iced::widget::container::Style::default()
+                            }
+                        });
+                        
+                        iced::widget::stack(vec![placeholder.into()])
+                            .width(Length::Fixed(120.0))
+                            .height(Length::Fixed(120.0))
+                    };
+                    
+                    let styled_container = container(content_stack)
+                        .padding(3)
+                        .style(move |theme: &iced::Theme| {
+                            let bg = theme.palette().background;
+                            let is_dark = theme.palette().background.r < 0.5;
+                            
+                            let border_color = if is_selected {
+                                crate::ui::theme::HOT_PINK
+                            } else {
+                                if is_dark {
+                                    crate::ui::theme::PAPER_WHITE
+                                } else {
+                                    crate::ui::theme::CHARCOAL_DEEP
+                                }
+                            };
+                            
+                            iced::widget::container::Style {
+                                background: Some(iced::Background::Color(bg)),
+                                border: iced::Border {
+                                    color: border_color,
+                                    width: 4.0,
+                                    radius: 0.0.into(),
+                                },
+                                ..iced::widget::container::Style::default()
+                            }
+                        });
+                        
+                    let content = button(styled_container)
+                        .padding(0)
+                        .style(iced::widget::button::text)
+                        .on_press(Message::Select(idx));
+                        
+                    filmstrip = filmstrip.push(content);
+                }
+                
+                let filmstrip_scrollable = scrollable(container(filmstrip).padding(5))
+                    .direction(scrollable::Direction::Horizontal(Default::default()))
+                    .width(Length::Fill)
+                    .height(Length::Fixed(150.0));
+                
+                main_col = main_col.push(filmstrip_scrollable);
             }
         }
 
