@@ -189,7 +189,7 @@ pub fn brutalist_card_shadow_style(theme: &iced::Theme) -> iced::widget::contain
 pub fn brutalist_tab_bar_style(theme: &iced::Theme, status: iced_aw::style::Status) -> iced_aw::style::tab_bar::Style {
     let is_dark = theme.palette().background.r < 0.5;
     let border_color = if is_dark { PAPER_WHITE } else { CHARCOAL_DEEP };
-    let bg_color = if is_dark { CHARCOAL_DEEP } else { PAPER_WHITE };
+    let _bg_color = if is_dark { CHARCOAL_DEEP } else { PAPER_WHITE };
     let fg_color = if is_dark { PAPER_WHITE } else { CHARCOAL_DEEP };
 
     let (tab_bg, tab_text, tab_border) = match status {
