@@ -1,7 +1,6 @@
 fn main() {
-    let _x = iced::Event::Window(winit::event::WindowEvent::PinchGesture {
-        device_id: unsafe { std::mem::zeroed() },
-        delta: 0.0,
-        phase: winit::event::TouchPhase::Started,
-    });
+    let file = std::fs::File::open("").unwrap();
+    let mut reader = std::io::BufReader::new(file);
+    let exif = exif::Reader::new().read_from_container(&mut reader).unwrap();
+    let _t = exif.thumbnail;
 }

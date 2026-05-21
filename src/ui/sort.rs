@@ -7,6 +7,7 @@ use crate::ui::theme::{brutalist_button_style, brutalist_light_button_style, bol
 use std::path::PathBuf;
 use std::fs;
 use ::image::GenericImageView;
+use exif::{In, Tag, Reader};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SortAction {
@@ -71,6 +72,151 @@ fn make_placeholder_thumbnail() -> iced::widget::image::Handle {
     iced::widget::image::Handle::from_rgba(width, height, pixels)
 }
 
+fn generate_with_sips(src_path: &std::path::Path, dest_path: &std::path::Path, max_dimension: Option<u32>) -> bool {
+    let mut cmd = std::process::Command::new("sips");
+    cmd.arg("-s")
+       .arg("format")
+       .arg("jpeg");
+       
+    if let Some(dim) = max_dimension {
+        cmd.arg("-Z")
+           .arg(dim.to_string());
+    }
+    
+    let output = cmd.arg(src_path)
+        .arg("--out")
+        .arg(dest_path)
+        .output();
+        
+    match output {
+        Ok(out) => out.status.success(),
+        Err(_) => false,
+    }
+}
+
+fn get_raw_dimensions(path: &std::path::Path) -> Option<(u32, u32)> {
+    let file = std::fs::File::open(path).ok()?;
+    let mut bufreader = std::io::BufReader::new(file);
+    let exifreader = Reader::new();
+    let exif = exifreader.read_from_container(&mut bufreader).ok()?;
+    
+    let width = exif.get_field(Tag::PixelXDimension, In::PRIMARY)
+        .or_else(|| exif.get_field(Tag::ImageWidth, In::PRIMARY))?
+        .value.get_uint(0)?;
+        
+    let height = exif.get_field(Tag::PixelYDimension, In::PRIMARY)
+        .or_else(|| exif.get_field(Tag::ImageLength, In::PRIMARY))?
+        .value.get_uint(0)?;
+        
+    let orientation = exif.get_field(Tag::Orientation, In::PRIMARY)
+        .and_then(|f| f.value.get_uint(0))
+        .unwrap_or(1);
+        
+    if orientation == 5 || orientation == 6 || orientation == 7 || orientation == 8 {
+        Some((height, width))
+    } else {
+        Some((width, height))
+    }
+}
+
+fn ensure_raw_assets(path: &std::path::Path, thumb_path: &std::path::Path, preview_path: &std::path::Path) -> ((u32, u32), Option<iced::widget::image::Handle>) {
+    let mut dims = (0, 0);
+    let mut extracted_thumb = false;
+    
+    if let Ok(file) = std::fs::File::open(path) {
+        let mut bufreader = std::io::BufReader::new(file);
+        let exifreader = Reader::new();
+        if let Ok(exif) = exifreader.read_from_container(&mut bufreader) {
+            // 1. Get raw dimensions
+            let width = exif.get_field(Tag::PixelXDimension, In::PRIMARY)
+                .or_else(|| exif.get_field(Tag::ImageWidth, In::PRIMARY))
+                .and_then(|f| f.value.get_uint(0));
+                
+            let height = exif.get_field(Tag::PixelYDimension, In::PRIMARY)
+                .or_else(|| exif.get_field(Tag::ImageLength, In::PRIMARY))
+                .and_then(|f| f.value.get_uint(0));
+                
+            let orientation = exif.get_field(Tag::Orientation, In::PRIMARY)
+                .and_then(|f| f.value.get_uint(0))
+                .unwrap_or(1);
+                
+            let is_portrait = orientation == 5 || orientation == 6 || orientation == 7 || orientation == 8;
+                
+            if let (Some(w), Some(h)) = (width, height) {
+                if is_portrait {
+                    dims = (h, w);
+                } else {
+                    dims = (w, h);
+                }
+            }
+            
+            // 2. Try to extract EXIF thumbnail if not portrait and thumb_path doesn't exist
+            if !is_portrait && !thumb_path.exists() {
+                let offset = exif.get_field(Tag::JPEGInterchangeFormat, In::THUMBNAIL)
+                    .and_then(|f| f.value.get_uint(0));
+                let length = exif.get_field(Tag::JPEGInterchangeFormatLength, In::THUMBNAIL)
+                    .and_then(|f| f.value.get_uint(0));
+                    
+                if let (Some(offset), Some(length)) = (offset, length) {
+                    use std::io::{Seek, SeekFrom, Read};
+                    if let Ok(mut file) = std::fs::File::open(path) {
+                        if file.seek(SeekFrom::Start(offset as u64)).is_ok() {
+                            let mut buffer = vec![0u8; length as usize];
+                            if file.read_exact(&mut buffer).is_ok() {
+                                if let Some(parent) = thumb_path.parent() {
+                                    let _ = std::fs::create_dir_all(parent);
+                                }
+                                if std::fs::write(thumb_path, &buffer).is_ok() {
+                                    extracted_thumb = true;
+                                }
+                            }
+                        }
+                    }
+                }
+            } else if thumb_path.exists() {
+                extracted_thumb = true;
+            }
+        }
+    }
+    
+    // 3. Fallback to generating 256px thumbnail using sips if not present/extracted
+    if !thumb_path.exists() && !extracted_thumb {
+        if let Some(parent) = thumb_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let _ = generate_with_sips(path, thumb_path, Some(256));
+    }
+    
+    // 4. Ensure high-resolution preview exists (generate using sips without resizing)
+    if !preview_path.exists() {
+        if let Some(parent) = preview_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let _ = generate_with_sips(path, preview_path, None);
+    }
+    
+    let handle = if thumb_path.exists() {
+        Some(iced::widget::image::Handle::from_path(thumb_path))
+    } else {
+        None
+    };
+    
+    let final_dims = if dims == (0, 0) {
+        if preview_path.exists() {
+            ::image::image_dimensions(preview_path).unwrap_or((0, 0))
+        } else if thumb_path.exists() {
+            ::image::image_dimensions(thumb_path).unwrap_or((0, 0))
+        } else {
+            (0, 0)
+        }
+    } else {
+        dims
+    };
+    
+    (final_dims, handle)
+}
+
+
 impl State {
     pub fn new(config: &Config) -> Self {
         let (mut panes, grid_pane) = pane_grid::State::new(PaneState::Grid);
@@ -120,7 +266,7 @@ impl State {
                             if path.is_file() {
                                 if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
                                     let ext = ext.to_lowercase();
-                                    if ["jpg", "jpeg", "png", "bmp", "tiff", "webp"].contains(&ext.as_str()) {
+                                    if ["jpg", "jpeg", "png", "bmp", "tiff", "webp", "raw", "cr2", "nef", "arw"].contains(&ext.as_str()) {
                                         paths.push(path);
                                     }
                                 }
@@ -132,13 +278,30 @@ impl State {
                             let metadata = fs::metadata(&path).ok();
                             let file_size_bytes = metadata.map(|m| m.len()).unwrap_or(0);
                             let filename = path.file_name().unwrap_or_default().to_string_lossy().to_string();
-                            let orig_dimensions = ::image::image_dimensions(&path).unwrap_or((0, 0));
+                            
+                            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+                            let is_raw = ["raw", "cr2", "nef", "arw"].contains(&ext.as_str());
                             
                             let thumb_path = cache_dir.join(format!("{}.jpg", filename));
-                            let handle = if thumb_path.exists() {
-                                iced::widget::image::Handle::from_path(thumb_path)
+                            let preview_path = cache_dir.join(format!("{}_preview.jpg", filename));
+                            
+                            let (orig_dimensions, handle) = if is_raw {
+                                if thumb_path.exists() && preview_path.exists() {
+                                    let dims = get_raw_dimensions(&path).unwrap_or((0, 0));
+                                    (dims, iced::widget::image::Handle::from_path(&thumb_path))
+                                } else {
+                                    let (dims, opt_h) = ensure_raw_assets(&path, &thumb_path, &preview_path);
+                                    let h = opt_h.unwrap_or_else(make_placeholder_thumbnail);
+                                    (dims, h)
+                                }
                             } else {
-                                make_placeholder_thumbnail()
+                                let dims = ::image::image_dimensions(&path).unwrap_or((0, 0));
+                                let h = if thumb_path.exists() {
+                                    iced::widget::image::Handle::from_path(&thumb_path)
+                                } else {
+                                    make_placeholder_thumbnail()
+                                };
+                                (dims, h)
                             };
                             
                             found.push(SortItem {
@@ -190,7 +353,7 @@ impl State {
                                     if path.is_file() {
                                         if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
                                             let ext = ext.to_lowercase();
-                                            if ["jpg", "jpeg", "png", "bmp", "tiff", "webp"].contains(&ext.as_str()) {
+                                            if ["jpg", "jpeg", "png", "bmp", "tiff", "webp", "raw", "cr2", "nef", "arw"].contains(&ext.as_str()) {
                                                 paths.push(path);
                                             }
                                         }
@@ -203,13 +366,21 @@ impl State {
                                     let file_size_bytes = metadata.map(|m| m.len()).unwrap_or(0);
                                     let filename = path.file_name().unwrap_or_default().to_string_lossy().to_string();
                                     
-                                    if let Ok(img) = ::image::open(&path) {
-                                        let orig_dimensions = img.dimensions();
+                                    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+                                    let is_raw = ["raw", "cr2", "nef", "arw"].contains(&ext.as_str());
+                                    
+                                    let thumb_path = cache_dir.join(format!("{}.jpg", filename));
+                                    let preview_path = cache_dir.join(format!("{}_preview.jpg", filename));
+                                    
+                                    let (orig_dimensions, handle) = if is_raw {
+                                        let (dims, opt_h) = ensure_raw_assets(&path, &thumb_path, &preview_path);
+                                        let h = opt_h.unwrap_or_else(make_placeholder_thumbnail);
+                                        (dims, h)
+                                    } else if let Ok(img) = ::image::open(&path) {
+                                        let dims = img.dimensions();
                                         let thumb = img.thumbnail(256, 256);
-                                        
-                                        let thumb_path = cache_dir.join(format!("{}.jpg", filename));
-                                        let handle = if thumb.save(&thumb_path).is_ok() {
-                                            iced::widget::image::Handle::from_path(thumb_path)
+                                        let h = if thumb.save(&thumb_path).is_ok() {
+                                            iced::widget::image::Handle::from_path(&thumb_path)
                                         } else {
                                             let rgba = thumb.to_rgba8();
                                             let dimensions = rgba.dimensions();
@@ -219,16 +390,24 @@ impl State {
                                                 rgba.into_raw()
                                             )
                                         };
-                                        
-                                        found.push(SortItem {
-                                            path,
-                                            filename,
-                                            file_size_bytes,
-                                            dimensions: orig_dimensions,
-                                            thumbnail: handle,
-                                            action: SortAction::Unsorted,
-                                        });
-                                    }
+                                        (dims, h)
+                                    } else {
+                                        let h = if thumb_path.exists() {
+                                            iced::widget::image::Handle::from_path(&thumb_path)
+                                        } else {
+                                            make_placeholder_thumbnail()
+                                        };
+                                        ((0, 0), h)
+                                    };
+                                    
+                                    found.push(SortItem {
+                                        path,
+                                        filename,
+                                        file_size_bytes,
+                                        dimensions: orig_dimensions,
+                                        thumbnail: handle,
+                                        action: SortAction::Unsorted,
+                                    });
                                 }
                             }
                             found
@@ -545,9 +724,37 @@ impl State {
                             
                             preview_col = preview_col.push(details_card);
                             
+                            let ext = item.path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+                            let is_raw = ["raw", "cr2", "nef", "arw"].contains(&ext.as_str());
+                            
+                            let preview_handle = if is_raw {
+                                if let Some(to_sort) = &self.to_sort_dir {
+                                    let preview_path = to_sort.join(".thumbnail_cache").join(format!("{}_preview.jpg", item.filename));
+                                    let thumb_path = to_sort.join(".thumbnail_cache").join(format!("{}.jpg", item.filename));
+                                    
+                                    if preview_path.exists() {
+                                        image::Handle::from_path(preview_path)
+                                    } else if thumb_path.exists() {
+                                        image::Handle::from_path(thumb_path)
+                                    } else {
+                                        make_placeholder_thumbnail()
+                                    }
+                                } else {
+                                    make_placeholder_thumbnail()
+                                }
+                            } else {
+                                image::Handle::from_path(item.path.clone())
+                            };
+                            
+                            let preview_dimensions = if item.dimensions == (0, 0) {
+                                (256, 256)
+                            } else {
+                                item.dimensions
+                            };
+
                             let canvas_widget = canvas(PreviewCanvas {
-                                handle: image::Handle::from_path(item.path.clone()),
-                                dimensions: item.dimensions,
+                                handle: preview_handle,
+                                dimensions: preview_dimensions,
                                 state: &self.preview_viewer,
                                 is_fit: self.preview_is_fit,
                             })
