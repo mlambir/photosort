@@ -1,14 +1,17 @@
-use iced::widget::{button, column, row, text, image, container, scrollable, canvas};
-use iced::{Element, Task, Length, Alignment, Subscription};
 use crate::core::config::Config;
-use crate::ui::viewer::{self, ViewerState, PreviewCanvas};
-use crate::ui::theme::{self, brutalist_button_style, brutalist_light_button_style, bold_font, brutalist_card_style, brutalist_card_shadow_style};
-use std::path::PathBuf;
+use crate::ui::theme::{
+    self, bold_font, brutalist_button_style, brutalist_card_shadow_style, brutalist_card_style,
+    brutalist_light_button_style,
+};
+use crate::ui::viewer::{self, PreviewCanvas, ViewerState};
+use exif::{In, Reader, Tag};
+use iced::widget::{button, canvas, column, container, image, row, scrollable, text};
+use iced::{Alignment, Element, Length, Subscription, Task};
 use std::fs;
-use exif::{In, Tag, Reader};
-use tokio::sync::mpsc::UnboundedReceiver;
+use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex as TokioMutex;
+use tokio::sync::mpsc::UnboundedReceiver;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SortAction {
@@ -62,9 +65,25 @@ pub enum Message {
     ResetZoom,
     ViewerMessage(viewer::Message),
     RefreshThumbnails,
-    ThumbnailLoaded { idx: usize, path: PathBuf, dimensions: (u32, u32), handle: Option<iced::widget::image::Handle> },
-    ThumbnailsLoaded(Vec<(usize, PathBuf, (u32, u32), Option<iced::widget::image::Handle>)>),
-    PreviewLoaded { idx: usize, handle: Option<iced::widget::image::Handle>, dimensions: (u32, u32) },
+    ThumbnailLoaded {
+        idx: usize,
+        path: PathBuf,
+        dimensions: (u32, u32),
+        handle: Option<iced::widget::image::Handle>,
+    },
+    ThumbnailsLoaded(
+        Vec<(
+            usize,
+            PathBuf,
+            (u32, u32),
+            Option<iced::widget::image::Handle>,
+        )>,
+    ),
+    PreviewLoaded {
+        idx: usize,
+        handle: Option<iced::widget::image::Handle>,
+        dimensions: (u32, u32),
+    },
     Tick,
     PrevImage,
     NextImage,
@@ -78,7 +97,7 @@ fn make_placeholder_thumbnail() -> iced::widget::image::Handle {
     let height = 256u32;
     let mut pixels = vec![0u8; (width * height * 4) as usize];
     for i in (0..pixels.len()).step_by(4) {
-        pixels[i] = 100;     // R
+        pixels[i] = 100; // R
         pixels[i + 1] = 110; // G
         pixels[i + 2] = 120; // B
         pixels[i + 3] = 255; // A
@@ -112,51 +131,55 @@ fn apply_exif_orientation(img: ::image::DynamicImage, orientation: u32) -> ::ima
     }
 }
 
-fn generate_with_sips(src_path: &std::path::Path, dest_path: &std::path::Path, max_dimension: Option<u32>) -> bool {
+fn generate_with_sips(
+    src_path: &std::path::Path,
+    dest_path: &std::path::Path,
+    max_dimension: Option<u32>,
+) -> bool {
     let mut cmd = std::process::Command::new("sips");
-    cmd.arg("-s")
-       .arg("format")
-       .arg("jpeg");
-       
+    cmd.arg("-s").arg("format").arg("jpeg");
+
     if let Some(dim) = max_dimension {
-        cmd.arg("-Z")
-           .arg(dim.to_string());
+        cmd.arg("-Z").arg(dim.to_string());
     }
-    
-    let output = cmd.arg(src_path)
-        .arg("--out")
-        .arg(dest_path)
-        .output();
-        
+
+    let output = cmd.arg(src_path).arg("--out").arg(dest_path).output();
+
     match output {
         Ok(out) => out.status.success(),
         Err(_) => false,
     }
 }
 
-
-fn ensure_raw_thumbnail(path: &std::path::Path, thumb_path: &std::path::Path) -> ((u32, u32), Option<iced::widget::image::Handle>) {
+fn ensure_raw_thumbnail(
+    path: &std::path::Path,
+    thumb_path: &std::path::Path,
+) -> ((u32, u32), Option<iced::widget::image::Handle>) {
     let mut dims = (0, 0);
-    
+
     if let Ok(file) = std::fs::File::open(path) {
         let mut bufreader = std::io::BufReader::new(file);
         let exifreader = Reader::new();
         if let Ok(exif) = exifreader.read_from_container(&mut bufreader) {
             // 1. Get raw dimensions
-            let width = exif.get_field(Tag::PixelXDimension, In::PRIMARY)
+            let width = exif
+                .get_field(Tag::PixelXDimension, In::PRIMARY)
                 .or_else(|| exif.get_field(Tag::ImageWidth, In::PRIMARY))
                 .and_then(|f| f.value.get_uint(0));
-                
-            let height = exif.get_field(Tag::PixelYDimension, In::PRIMARY)
+
+            let height = exif
+                .get_field(Tag::PixelYDimension, In::PRIMARY)
                 .or_else(|| exif.get_field(Tag::ImageLength, In::PRIMARY))
                 .and_then(|f| f.value.get_uint(0));
-                
-            let orientation = exif.get_field(Tag::Orientation, In::PRIMARY)
+
+            let orientation = exif
+                .get_field(Tag::Orientation, In::PRIMARY)
                 .and_then(|f| f.value.get_uint(0))
                 .unwrap_or(1);
-                
-            let is_portrait = orientation == 5 || orientation == 6 || orientation == 7 || orientation == 8;
-                
+
+            let is_portrait =
+                orientation == 5 || orientation == 6 || orientation == 7 || orientation == 8;
+
             if let (Some(w), Some(h)) = (width, height) {
                 if is_portrait {
                     dims = (h, w);
@@ -166,7 +189,7 @@ fn ensure_raw_thumbnail(path: &std::path::Path, thumb_path: &std::path::Path) ->
             }
         }
     }
-    
+
     // Always generate thumbnail using sips if not present
     if !thumb_path.exists() {
         if let Some(parent) = thumb_path.parent() {
@@ -174,10 +197,10 @@ fn ensure_raw_thumbnail(path: &std::path::Path, thumb_path: &std::path::Path) ->
         }
         let _ = generate_with_sips(path, thumb_path, Some(256));
     }
-    
+
     let mut handle = None;
     let mut decoded_dims = (0, 0);
-    
+
     if thumb_path.exists() {
         if let Ok(img) = ::image::open(thumb_path) {
             let orientation = get_exif_orientation(thumb_path);
@@ -185,12 +208,16 @@ fn ensure_raw_thumbnail(path: &std::path::Path, thumb_path: &std::path::Path) ->
             let rgba = img.to_rgba8();
             let (w, h) = rgba.dimensions();
             decoded_dims = (w, h);
-            handle = Some(iced::widget::image::Handle::from_rgba(w, h, rgba.into_raw()));
+            handle = Some(iced::widget::image::Handle::from_rgba(
+                w,
+                h,
+                rgba.into_raw(),
+            ));
         } else {
             handle = Some(iced::widget::image::Handle::from_path(thumb_path));
         }
     }
-    
+
     let final_dims = if dims == (0, 0) {
         if decoded_dims != (0, 0) {
             decoded_dims
@@ -202,7 +229,7 @@ fn ensure_raw_thumbnail(path: &std::path::Path, thumb_path: &std::path::Path) ->
     } else {
         dims
     };
-    
+
     (final_dims, handle)
 }
 
@@ -221,7 +248,6 @@ fn get_spinner_char(tick: usize) -> &'static str {
     frames[tick % frames.len()]
 }
 
-
 #[derive(Clone)]
 struct HashableArc<T>(Arc<T>);
 
@@ -237,23 +263,35 @@ impl<T> PartialEq for HashableArc<T> {
 }
 impl<T> Eq for HashableArc<T> {}
 
-fn make_stream(rx: &HashableArc<TokioMutex<UnboundedReceiver<Message>>>) -> futures::stream::BoxStream<'static, Message> {
+fn make_stream(
+    rx: &HashableArc<TokioMutex<UnboundedReceiver<Message>>>,
+) -> futures::stream::BoxStream<'static, Message> {
     use futures::StreamExt;
     let rx_clone = rx.0.clone();
     futures::stream::unfold(rx_clone, |rx| async move {
         let mut rx_guard = rx.lock().await;
         let first_msg = rx_guard.recv().await;
-        
+
         if let Some(msg) = first_msg {
             match msg {
-                Message::ThumbnailLoaded { idx, path, dimensions, handle } => {
+                Message::ThumbnailLoaded {
+                    idx,
+                    path,
+                    dimensions,
+                    handle,
+                } => {
                     // Sleep for 30ms to allow more thumbnails to accumulate in the channel buffer
                     tokio::time::sleep(std::time::Duration::from_millis(30)).await;
-                    
+
                     let mut batch = vec![(idx, path, dimensions, handle)];
                     while let Ok(next_msg) = rx_guard.try_recv() {
                         match next_msg {
-                            Message::ThumbnailLoaded { idx, path, dimensions, handle } => {
+                            Message::ThumbnailLoaded {
+                                idx,
+                                path,
+                                dimensions,
+                                handle,
+                            } => {
                                 batch.push((idx, path, dimensions, handle));
                             }
                             _ => {}
@@ -271,19 +309,18 @@ fn make_stream(rx: &HashableArc<TokioMutex<UnboundedReceiver<Message>>>) -> futu
             drop(rx_guard);
             None
         }
-    }).boxed()
+    })
+    .boxed()
 }
-
 
 impl State {
     pub fn new(config: &Config) -> Self {
-
         let (tx, rx) = std::sync::mpsc::channel::<ThumbnailRequest>();
         let rx = std::sync::Arc::new(std::sync::Mutex::new(rx));
-        
+
         let (result_tx, result_rx) = tokio::sync::mpsc::unbounded_channel::<Message>();
         let result_rx = std::sync::Arc::new(tokio::sync::Mutex::new(result_rx));
-        
+
         for i in 0..2 {
             let rx_clone = rx.clone();
             let result_tx_clone = result_tx.clone();
@@ -299,19 +336,28 @@ impl State {
                             Err(_) => break,
                         }
                     };
-                    
-                    println!("[Worker {}] Started processing item {} ({})", i, req.idx, req.filename);
-                    
-                    let ext = req.path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+
+                    println!(
+                        "[Worker {}] Started processing item {} ({})",
+                        i, req.idx, req.filename
+                    );
+
+                    let ext = req
+                        .path
+                        .extension()
+                        .and_then(|e| e.to_str())
+                        .unwrap_or("")
+                        .to_lowercase();
                     let is_raw = ["raw", "cr2", "nef", "arw"].contains(&ext.as_str());
-                    
+
                     let thumb_path = req.cache_dir.join(format!("{}.jpg", req.filename));
-                    
+
                     let (dimensions, mut handle) = if is_raw {
                         ensure_raw_thumbnail(&req.path, &thumb_path)
                     } else {
                         if !thumb_path.exists() {
-                            let sips_success = generate_with_sips(&req.path, &thumb_path, Some(256));
+                            let sips_success =
+                                generate_with_sips(&req.path, &thumb_path, Some(256));
                             if !sips_success {
                                 if let Ok(img) = ::image::open(&req.path) {
                                     let orientation = get_exif_orientation(&req.path);
@@ -330,26 +376,34 @@ impl State {
                                 let rgba = img.to_rgba8();
                                 let (w, h) = rgba.dimensions();
                                 final_dims = (w, h);
-                                final_handle = Some(iced::widget::image::Handle::from_rgba(w, h, rgba.into_raw()));
+                                final_handle = Some(iced::widget::image::Handle::from_rgba(
+                                    w,
+                                    h,
+                                    rgba.into_raw(),
+                                ));
                             } else {
-                                final_handle = Some(iced::widget::image::Handle::from_path(&thumb_path));
+                                final_handle =
+                                    Some(iced::widget::image::Handle::from_path(&thumb_path));
                             }
                         }
                         (final_dims, final_handle)
                     };
-                    
+
                     if handle.is_none() {
                         handle = Some(make_placeholder_thumbnail());
                     }
-                    
-                    println!("[Worker {}] Finished processing item {} ({})", i, req.idx, req.filename);
+
+                    println!(
+                        "[Worker {}] Finished processing item {} ({})",
+                        i, req.idx, req.filename
+                    );
                     let _ = result_tx_clone.send(Message::ThumbnailLoaded {
                         idx: req.idx,
                         path: req.path,
                         dimensions,
                         handle,
                     });
-                    
+
                     // Yield a little bit to prevent CPU starvation of the main thread
                     std::thread::sleep(std::time::Duration::from_millis(5));
                 }
@@ -385,30 +439,39 @@ impl State {
             self.preview_handle = None;
             return Task::none();
         }
-        
+
         let item = &self.items[idx];
-        let ext = item.path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+        let ext = item
+            .path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_lowercase();
         let is_raw = ["raw", "cr2", "nef", "arw"].contains(&ext.as_str());
-        
+
         self.preview_loading = true;
         self.preview_handle = None;
-        
+
         let path = item.path.clone();
         let to_sort_dir = self.to_sort_dir.clone();
         let filename = item.filename.clone();
-        
+
         Task::perform(
             async move {
                 let (tx, rx) = futures::channel::oneshot::channel();
                 std::thread::spawn(move || {
                     let mut loaded_handle = None;
                     let mut loaded_dims = (0, 0);
-                    
+
                     if is_raw {
                         if let Some(to_sort) = to_sort_dir {
-                            let preview_path = to_sort.join(".thumbnail_cache").join(format!("{}_preview.jpg", filename));
-                            let thumb_path = to_sort.join(".thumbnail_cache").join(format!("{}.jpg", filename));
-                            
+                            let preview_path = to_sort
+                                .join(".thumbnail_cache")
+                                .join(format!("{}_preview.jpg", filename));
+                            let thumb_path = to_sort
+                                .join(".thumbnail_cache")
+                                .join(format!("{}.jpg", filename));
+
                             let success = ensure_raw_preview(&path, &preview_path);
                             let target_path = if success && preview_path.exists() {
                                 Some(preview_path)
@@ -417,7 +480,7 @@ impl State {
                             } else {
                                 None
                             };
-                            
+
                             if let Some(t_path) = target_path {
                                 if let Ok(img) = ::image::open(&t_path) {
                                     let orientation = get_exif_orientation(&t_path);
@@ -449,17 +512,21 @@ impl State {
                 });
                 rx.await.unwrap_or_else(|_| (idx, None, (0, 0)))
             },
-            |(idx, handle, dimensions)| Message::PreviewLoaded { idx, handle, dimensions }
+            |(idx, handle, dimensions)| Message::PreviewLoaded {
+                idx,
+                handle,
+                dimensions,
+            },
         )
     }
 
     pub fn refresh(&mut self, config: &Config) -> Task<Message> {
         self.update_config(config);
-        
+
         if let Some(to_sort) = &self.to_sort_dir {
             let dir = to_sort.clone();
             self.status = "Scanning photos...".to_string();
-            
+
             Task::perform(
                 async move {
                     let mut found = Vec::new();
@@ -467,30 +534,42 @@ impl State {
                         let mut paths = Vec::new();
                         for entry in entries.flatten() {
                             let path = entry.path();
-                            if path.components().any(|c| c.as_os_str() == ".thumbnail_cache") {
+                            if path
+                                .components()
+                                .any(|c| c.as_os_str() == ".thumbnail_cache")
+                            {
                                 continue;
                             }
                             if path.is_file() {
                                 if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
                                     let ext = ext.to_lowercase();
-                                    if ["jpg", "jpeg", "png", "bmp", "tiff", "webp", "raw", "cr2", "nef", "arw"].contains(&ext.as_str()) {
+                                    if [
+                                        "jpg", "jpeg", "png", "bmp", "tiff", "webp", "raw", "cr2",
+                                        "nef", "arw",
+                                    ]
+                                    .contains(&ext.as_str())
+                                    {
                                         paths.push(path);
                                     }
                                 }
                             }
                         }
                         paths.sort();
-                        
+
                         for path in paths {
                             let metadata = fs::metadata(&path).ok();
                             let file_size_bytes = metadata.map(|m| m.len()).unwrap_or(0);
-                            let filename = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+                            let filename = path
+                                .file_name()
+                                .unwrap_or_default()
+                                .to_string_lossy()
+                                .to_string();
                             found.push((path, filename, file_size_bytes));
                         }
                     }
                     found
                 },
-                Message::Refreshed
+                Message::Refreshed,
             )
         } else {
             self.status = "To Sort directory not configured.".to_string();
@@ -504,17 +583,25 @@ impl State {
                 if let Some(to_sort) = &self.to_sort_dir {
                     let dir = to_sort.clone();
                     self.status = "Regenerating thumbnail cache...".to_string();
-                    
+
                     // Clear all thumbnails immediately in UI to show spinners
                     for item in &mut self.items {
                         item.thumbnail = None;
                     }
-                    
+
                     // Grab current items' metadata to pass to Refreshed once cache is cleared
-                    let current_metadata: Vec<(PathBuf, String, u64)> = self.items.iter()
-                        .map(|item| (item.path.clone(), item.filename.clone(), item.file_size_bytes))
+                    let current_metadata: Vec<(PathBuf, String, u64)> = self
+                        .items
+                        .iter()
+                        .map(|item| {
+                            (
+                                item.path.clone(),
+                                item.filename.clone(),
+                                item.file_size_bytes,
+                            )
+                        })
                         .collect();
-                    
+
                     Task::perform(
                         async move {
                             let cache_dir = dir.join(".thumbnail_cache");
@@ -522,7 +609,7 @@ impl State {
                             let _ = std::fs::create_dir_all(&cache_dir);
                             current_metadata
                         },
-                        Message::Refreshed
+                        Message::Refreshed,
                     )
                 } else {
                     self.status = "To Sort directory not configured.".to_string();
@@ -531,25 +618,29 @@ impl State {
             }
             Message::Refreshed(items_meta) => {
                 println!("[Main] Refreshed received with {} items", items_meta.len());
-                self.items = items_meta.into_iter().map(|(path, filename, file_size_bytes)| {
-                    SortItem {
+                self.items = items_meta
+                    .into_iter()
+                    .map(|(path, filename, file_size_bytes)| SortItem {
                         path,
                         filename,
                         file_size_bytes,
                         dimensions: (0, 0),
                         thumbnail: None,
                         action: SortAction::Unsorted,
-                    }
-                }).collect();
+                    })
+                    .collect();
                 self.selected_index = if self.items.is_empty() { None } else { Some(0) };
                 self.is_loading = false;
                 self.update_status();
-                
+
                 if let Some(to_sort) = &self.to_sort_dir {
                     let cache_dir = to_sort.join(".thumbnail_cache");
                     let _ = std::fs::create_dir_all(&cache_dir);
-                    
-                    println!("[Main] Queuing {} thumbnail generation requests", self.items.len());
+
+                    println!(
+                        "[Main] Queuing {} thumbnail generation requests",
+                        self.items.len()
+                    );
                     for (idx, item) in self.items.iter().enumerate() {
                         let req = ThumbnailRequest {
                             idx,
@@ -560,15 +651,24 @@ impl State {
                         let _ = self.thumbnail_sender.send(req);
                     }
                 }
-                
+
                 if let Some(idx) = self.selected_index {
                     self.trigger_preview_load(idx)
                 } else {
                     Task::none()
                 }
             }
-            Message::ThumbnailLoaded { idx, path, dimensions, handle } => {
-                println!("[Main] ThumbnailLoaded received for item {} ({:?})", idx, path.file_name());
+            Message::ThumbnailLoaded {
+                idx,
+                path,
+                dimensions,
+                handle,
+            } => {
+                println!(
+                    "[Main] ThumbnailLoaded received for item {} ({:?})",
+                    idx,
+                    path.file_name()
+                );
                 if idx < self.items.len() && self.items[idx].path == path {
                     self.items[idx].dimensions = dimensions;
                     self.items[idx].thumbnail = handle;
@@ -576,7 +676,10 @@ impl State {
                 Task::none()
             }
             Message::ThumbnailsLoaded(batch) => {
-                println!("[Main] ThumbnailsLoaded received batch of {} items", batch.len());
+                println!(
+                    "[Main] ThumbnailsLoaded received batch of {} items",
+                    batch.len()
+                );
                 for (idx, path, dimensions, handle) in batch {
                     if idx < self.items.len() && self.items[idx].path == path {
                         self.items[idx].dimensions = dimensions;
@@ -585,7 +688,11 @@ impl State {
                 }
                 Task::none()
             }
-            Message::PreviewLoaded { idx, handle, dimensions } => {
+            Message::PreviewLoaded {
+                idx,
+                handle,
+                dimensions,
+            } => {
                 if let Some(current_idx) = self.selected_index {
                     if current_idx == idx {
                         self.preview_handle = handle;
@@ -605,13 +712,23 @@ impl State {
                 self.trigger_preview_load(index)
             }
             Message::ZoomIn => {
-                let bounds = self.preview_viewer.bounds.lock().unwrap().unwrap_or(iced::Size::new(100.0, 100.0));
+                let bounds = self
+                    .preview_viewer
+                    .bounds
+                    .lock()
+                    .unwrap()
+                    .unwrap_or(iced::Size::new(100.0, 100.0));
                 let center = iced::Point::new(bounds.width / 2.0, bounds.height / 2.0);
                 self.apply_zoom(1.2, center);
                 Task::none()
             }
             Message::ZoomOut => {
-                let bounds = self.preview_viewer.bounds.lock().unwrap().unwrap_or(iced::Size::new(100.0, 100.0));
+                let bounds = self
+                    .preview_viewer
+                    .bounds
+                    .lock()
+                    .unwrap()
+                    .unwrap_or(iced::Size::new(100.0, 100.0));
                 let center = iced::Point::new(bounds.width / 2.0, bounds.height / 2.0);
                 self.apply_zoom(0.8, center);
                 Task::none()
@@ -636,8 +753,12 @@ impl State {
                     viewer::Message::DragStarted(pos) => {
                         if self.preview_is_fit {
                             self.preview_is_fit = false;
-                            if let Ok(z) = self.preview_viewer.rendered_zoom.lock() { self.preview_viewer.zoom = *z; }
-                            if let Ok(o) = self.preview_viewer.rendered_offset.lock() { self.preview_viewer.offset = *o; }
+                            if let Ok(z) = self.preview_viewer.rendered_zoom.lock() {
+                                self.preview_viewer.zoom = *z;
+                            }
+                            if let Ok(o) = self.preview_viewer.rendered_offset.lock() {
+                                self.preview_viewer.offset = *o;
+                            }
                         }
                         self.preview_viewer.is_dragging = true;
                         self.preview_viewer.last_cursor = Some(pos);
@@ -699,10 +820,10 @@ impl State {
                 if let Some(library) = &self.library_dir {
                     self.is_loading = true;
                     self.status = "Applying changes...".to_string();
-                    
+
                     let items_to_process = self.items.clone();
                     let library = library.clone();
-                    
+
                     Task::perform(
                         async move {
                             for item in items_to_process {
@@ -729,13 +850,15 @@ impl State {
                                 }
                                 if has_moved_or_deleted {
                                     if let Some(parent) = item.path.parent() {
-                                        let thumb_path = parent.join(".thumbnail_cache").join(format!("{}.jpg", item.filename));
+                                        let thumb_path = parent
+                                            .join(".thumbnail_cache")
+                                            .join(format!("{}.jpg", item.filename));
                                         let _ = fs::remove_file(thumb_path);
                                     }
                                 }
                             }
                         },
-                        |_| Message::ApplyComplete(())
+                        |_| Message::ApplyComplete(()),
                     )
                 } else {
                     self.status = "Library directory not configured!".to_string();
@@ -743,7 +866,8 @@ impl State {
                 }
             }
             Message::ApplyComplete(()) => {
-                self.items.retain(|item| item.action == SortAction::Unsorted);
+                self.items
+                    .retain(|item| item.action == SortAction::Unsorted);
                 self.selected_index = if self.items.is_empty() { None } else { Some(0) };
                 self.is_loading = false;
                 self.update_status();
@@ -763,73 +887,68 @@ impl State {
     fn apply_zoom(&mut self, multiplier: f32, center: iced::Point) {
         if self.preview_is_fit {
             self.preview_is_fit = false;
-            if let Ok(z) = self.preview_viewer.rendered_zoom.lock() { self.preview_viewer.zoom = *z; }
-            if let Ok(o) = self.preview_viewer.rendered_offset.lock() { self.preview_viewer.offset = *o; }
+            if let Ok(z) = self.preview_viewer.rendered_zoom.lock() {
+                self.preview_viewer.zoom = *z;
+            }
+            if let Ok(o) = self.preview_viewer.rendered_offset.lock() {
+                self.preview_viewer.offset = *o;
+            }
         }
-        
+
         let old_zoom = self.preview_viewer.zoom;
         let new_zoom = old_zoom * multiplier;
-        
+
         let cursor_in_image_x = (center.x - self.preview_viewer.offset.x) / old_zoom;
         let cursor_in_image_y = (center.y - self.preview_viewer.offset.y) / old_zoom;
-        
+
         self.preview_viewer.offset.x = center.x - cursor_in_image_x * new_zoom;
         self.preview_viewer.offset.y = center.y - cursor_in_image_y * new_zoom;
-        
+
         self.preview_viewer.zoom = new_zoom;
     }
 
     pub fn subscription(&self) -> Subscription<Message> {
         let drag_sub = if self.preview_viewer.is_dragging {
-            iced::event::listen_with(|event, _status, _window| {
-                match event {
-                    iced::Event::Mouse(iced::mouse::Event::CursorMoved { position }) => {
-                        Some(Message::ViewerMessage(viewer::Message::Dragged(position)))
-                    }
-                    iced::Event::Mouse(iced::mouse::Event::ButtonReleased(iced::mouse::Button::Left)) => {
-                        Some(Message::ViewerMessage(viewer::Message::DragEnded))
-                    }
-                    _ => None,
+            iced::event::listen_with(|event, _status, _window| match event {
+                iced::Event::Mouse(iced::mouse::Event::CursorMoved { position }) => {
+                    Some(Message::ViewerMessage(viewer::Message::Dragged(position)))
                 }
+                iced::Event::Mouse(iced::mouse::Event::ButtonReleased(
+                    iced::mouse::Button::Left,
+                )) => Some(Message::ViewerMessage(viewer::Message::DragEnded)),
+                _ => None,
             })
         } else {
             Subscription::none()
         };
 
-        let keyboard_sub = iced::event::listen_with(|event, _status, _window| {
-            match event {
-                iced::Event::Keyboard(iced::keyboard::Event::KeyPressed { key, .. }) => {
-                    match key {
-                        iced::keyboard::Key::Named(iced::keyboard::key::Named::ArrowLeft) => {
-                            Some(Message::PrevImage)
-                        }
-                        iced::keyboard::Key::Named(iced::keyboard::key::Named::ArrowRight) => {
-                            Some(Message::NextImage)
-                        }
-                        iced::keyboard::Key::Named(iced::keyboard::key::Named::ArrowUp) => {
-                            Some(Message::ToggleKeep)
-                        }
-                        iced::keyboard::Key::Named(iced::keyboard::key::Named::ArrowDown) => {
-                            Some(Message::ToggleDiscard)
-                        }
-                        _ => None,
-                    }
+        let keyboard_sub = iced::event::listen_with(|event, _status, _window| match event {
+            iced::Event::Keyboard(iced::keyboard::Event::KeyPressed { key, .. }) => match key {
+                iced::keyboard::Key::Named(iced::keyboard::key::Named::ArrowLeft) => {
+                    Some(Message::PrevImage)
+                }
+                iced::keyboard::Key::Named(iced::keyboard::key::Named::ArrowRight) => {
+                    Some(Message::NextImage)
+                }
+                iced::keyboard::Key::Named(iced::keyboard::key::Named::ArrowUp) => {
+                    Some(Message::ToggleKeep)
+                }
+                iced::keyboard::Key::Named(iced::keyboard::key::Named::ArrowDown) => {
+                    Some(Message::ToggleDiscard)
                 }
                 _ => None,
-            }
+            },
+            _ => None,
         });
 
         let rx_hashable = HashableArc(self.result_rx.clone());
-        let result_sub = Subscription::run_with(
-            rx_hashable,
-            make_stream,
-        );
+        let result_sub = Subscription::run_with(rx_hashable, make_stream);
 
-        let needs_tick = self.preview_loading || self.items.iter().any(|item| item.thumbnail.is_none());
-        
+        let needs_tick =
+            self.preview_loading || self.items.iter().any(|item| item.thumbnail.is_none());
+
         let tick_sub = if needs_tick {
-            iced::time::every(std::time::Duration::from_millis(150))
-                .map(|_| Message::Tick)
+            iced::time::every(std::time::Duration::from_millis(150)).map(|_| Message::Tick)
         } else {
             Subscription::none()
         };
@@ -841,10 +960,25 @@ impl State {
         if self.items.is_empty() {
             self.status = "All caught up!".to_string();
         } else {
-            let unsorted = self.items.iter().filter(|i| i.action == SortAction::Unsorted).count();
-            let keep = self.items.iter().filter(|i| i.action == SortAction::Keep).count();
-            let discard = self.items.iter().filter(|i| i.action == SortAction::Discard).count();
-            self.status = format!("Remaining: {} | Keeping: {} | Discarding: {}", unsorted, keep, discard);
+            let unsorted = self
+                .items
+                .iter()
+                .filter(|i| i.action == SortAction::Unsorted)
+                .count();
+            let keep = self
+                .items
+                .iter()
+                .filter(|i| i.action == SortAction::Keep)
+                .count();
+            let discard = self
+                .items
+                .iter()
+                .filter(|i| i.action == SortAction::Discard)
+                .count();
+            self.status = format!(
+                "Remaining: {} | Keeping: {} | Discarding: {}",
+                unsorted, keep, discard
+            );
         }
     }
 
@@ -853,8 +987,10 @@ impl State {
             text("SORT PHOTOS").font(bold_font()).size(28),
             iced::widget::Space::new().width(Length::Fixed(20.0)),
             text(self.status.to_uppercase()).font(bold_font()).size(14),
-        ].spacing(10).align_y(Alignment::Center);
-        
+        ]
+        .spacing(10)
+        .align_y(Alignment::Center);
+
         if !self.is_loading {
             header = header.push(iced::widget::Space::new().width(Length::Fill));
             header = header.push(
@@ -864,7 +1000,7 @@ impl State {
                         text("APPLY").font(bold_font()).size(13),
                     ]
                     .spacing(8)
-                    .align_y(Alignment::Center)
+                    .align_y(Alignment::Center),
                 )
                 .on_press(Message::ApplyChanges)
                 .padding(iced::Padding {
@@ -873,35 +1009,35 @@ impl State {
                     left: 15.0,
                     right: 15.0,
                 })
-                .style(brutalist_light_button_style)
+                .style(brutalist_light_button_style),
             );
             header = header.push(
                 button(text(theme::ICON_REFRESH).font(theme::icon_font()).size(20))
                     .on_press(Message::RefreshThumbnails)
                     .padding(10)
-                    .style(brutalist_button_style)
+                    .style(brutalist_button_style),
             );
         }
 
-        let mut main_col = column![
-            header,
-        ].spacing(15);
-        
+        let mut main_col = column![header,].spacing(15);
+
         if self.is_loading {
             let spinner = get_spinner_char(self.spinner_tick);
             let loader = container(
                 column![
                     text(spinner).size(48).font(bold_font()),
-                    text("PROCESSING... PLEASE WAIT.").font(bold_font()).size(14),
+                    text("PROCESSING... PLEASE WAIT.")
+                        .font(bold_font())
+                        .size(14),
                 ]
                 .spacing(15)
-                .align_x(Alignment::Center)
+                .align_x(Alignment::Center),
             )
             .width(Length::Fill)
             .height(Length::Fill)
             .align_x(iced::alignment::Horizontal::Center)
             .align_y(iced::alignment::Vertical::Center);
-            
+
             main_col = main_col.push(loader);
         } else {
             // Left Side: Preview Area
@@ -909,18 +1045,31 @@ impl State {
                 if idx < self.items.len() {
                     let item = &self.items[idx];
                     if self.preview_loading {
-                        let ext = item.path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+                        let ext = item
+                            .path
+                            .extension()
+                            .and_then(|e| e.to_str())
+                            .unwrap_or("")
+                            .to_lowercase();
                         let is_raw = ["raw", "cr2", "nef", "arw"].contains(&ext.as_str());
-                        let needs_dev = is_raw && self.to_sort_dir.as_ref().map(|to_sort| {
-                            !to_sort.join(".thumbnail_cache").join(format!("{}_preview.jpg", item.filename)).exists()
-                        }).unwrap_or(true);
-                        
+                        let needs_dev = is_raw
+                            && self
+                                .to_sort_dir
+                                .as_ref()
+                                .map(|to_sort| {
+                                    !to_sort
+                                        .join(".thumbnail_cache")
+                                        .join(format!("{}_preview.jpg", item.filename))
+                                        .exists()
+                                })
+                                .unwrap_or(true);
+
                         let spinner_text = if needs_dev {
                             "DEVELOPING RAW IMAGE..."
                         } else {
                             "LOADING PREVIEW..."
                         };
-                        
+
                         let spinner = get_spinner_char(self.spinner_tick);
                         container(
                             column![
@@ -928,7 +1077,7 @@ impl State {
                                 text(spinner_text).size(14).font(bold_font()),
                             ]
                             .spacing(15)
-                            .align_x(Alignment::Center)
+                            .align_x(Alignment::Center),
                         )
                         .width(Length::Fill)
                         .height(Length::Fill)
@@ -937,13 +1086,16 @@ impl State {
                         .style(brutalist_card_style)
                         .into()
                     } else {
-                        let preview_handle = self.preview_handle.clone().unwrap_or_else(make_placeholder_thumbnail);
+                        let preview_handle = self
+                            .preview_handle
+                            .clone()
+                            .unwrap_or_else(make_placeholder_thumbnail);
                         let preview_dimensions = if item.dimensions == (0, 0) {
                             (256, 256)
                         } else {
                             item.dimensions
                         };
-                        
+
                         let canvas_widget = canvas(PreviewCanvas {
                             handle: preview_handle,
                             dimensions: preview_dimensions,
@@ -952,7 +1104,7 @@ impl State {
                         })
                         .width(Length::Fill)
                         .height(Length::Fill);
-                        
+
                         Element::from(canvas_widget).map(Message::ViewerMessage)
                     }
                 } else {
@@ -979,7 +1131,7 @@ impl State {
             if let Some(idx) = self.selected_index {
                 if idx < self.items.len() {
                     let item = &self.items[idx];
-                    
+
                     // 1. Details Card & Overlay (Top-Left)
                     let details_card = if self.details_expanded {
                         container(
@@ -989,7 +1141,9 @@ impl State {
                                     text("FILE DETAILS").font(bold_font()).size(11),
                                     iced::widget::Space::new().width(Length::Fixed(15.0)),
                                     button(
-                                        text(theme::ICON_CHEVRON_LEFT).font(theme::icon_font()).size(16)
+                                        text(theme::ICON_CHEVRON_LEFT)
+                                            .font(theme::icon_font())
+                                            .size(16)
                                     )
                                     .padding(2)
                                     .style(brutalist_button_style)
@@ -998,25 +1152,30 @@ impl State {
                                 .spacing(10)
                                 .align_y(Alignment::Center)
                                 .width(Length::Shrink),
-
                                 container(iced::widget::Space::new().height(2.0))
                                     .width(Length::Fill)
                                     .style(move |theme: &iced::Theme| {
                                         let is_dark = theme.palette().background.r < 0.5;
-                                        let line_color = if is_dark { theme::CHARCOAL_DEEP } else { theme::PAPER_WHITE };
+                                        let line_color = if is_dark {
+                                            theme::CHARCOAL_DEEP
+                                        } else {
+                                            theme::PAPER_WHITE
+                                        };
                                         iced::widget::container::Style {
                                             background: Some(iced::Background::Color(line_color)),
                                             ..Default::default()
                                         }
                                     }),
-
                                 column![
                                     text(item.filename.to_uppercase())
                                         .size(10)
                                         .font(bold_font()),
-                                    text(format!("{:.2} MB", item.file_size_bytes as f64 / 1_048_576.0))
-                                        .size(10)
-                                        .font(bold_font()),
+                                    text(format!(
+                                        "{:.2} MB",
+                                        item.file_size_bytes as f64 / 1_048_576.0
+                                    ))
+                                    .size(10)
+                                    .font(bold_font()),
                                     text(format!("{} X {}", item.dimensions.0, item.dimensions.1))
                                         .size(10)
                                         .font(bold_font()),
@@ -1027,7 +1186,7 @@ impl State {
                             ]
                             .spacing(10)
                             .width(Length::Shrink)
-                            .align_x(Alignment::Start)
+                            .align_x(Alignment::Start),
                         )
                         .width(Length::Shrink)
                         .padding(15)
@@ -1038,14 +1197,16 @@ impl State {
                                 row![
                                     text(theme::ICON_INFO).font(theme::icon_font()).size(16),
                                     text("INFO").font(bold_font()).size(11),
-                                    text(theme::ICON_CHEVRON_RIGHT).font(theme::icon_font()).size(16),
+                                    text(theme::ICON_CHEVRON_RIGHT)
+                                        .font(theme::icon_font())
+                                        .size(16),
                                 ]
                                 .spacing(6)
-                                .align_y(Alignment::Center)
+                                .align_y(Alignment::Center),
                             )
                             .padding(6)
                             .style(brutalist_button_style)
-                            .on_press(Message::ToggleDetailsExpanded)
+                            .on_press(Message::ToggleDetailsExpanded),
                         )
                         .width(Length::Shrink)
                         .padding(10)
@@ -1061,7 +1222,7 @@ impl State {
                                 bottom: 5.0,
                                 right: 5.0,
                             })
-                            .style(brutalist_card_shadow_style)
+                            .style(brutalist_card_shadow_style),
                     )
                     .width(Length::Fill)
                     .height(Length::Fill)
@@ -1107,7 +1268,8 @@ impl State {
                         .padding(0)
                         .style(brutalist_button_style)
                         .on_press(Message::ZoomOut),
-                    ].spacing(6);
+                    ]
+                    .spacing(6);
 
                     let zoom_card = container(zoom_controls)
                         .padding(8)
@@ -1121,7 +1283,7 @@ impl State {
                                 bottom: 5.0,
                                 right: 5.0,
                             })
-                            .style(brutalist_card_shadow_style)
+                            .style(brutalist_card_shadow_style),
                     )
                     .width(Length::Fill)
                     .height(Length::Fill)
@@ -1138,43 +1300,49 @@ impl State {
                             .width(Length::Fill)
                             .height(Length::Fill)
                             .align_x(iced::alignment::Horizontal::Center)
-                            .align_y(iced::alignment::Vertical::Center)
+                            .align_y(iced::alignment::Vertical::Center),
                     )
                     .width(Length::Fixed(38.0))
                     .height(Length::Fixed(38.0))
                     .padding(0)
-                    .style(move |theme_ref: &iced::Theme, status: iced::widget::button::Status| {
-                        let is_dark = theme_ref.palette().background.r < 0.5;
-                        let active_bg = iced::Color::from_rgb(0.9, 0.2, 0.25); // Vibrant Red
-                        
-                        let (bg, fg, border) = if is_discard_active {
-                            (active_bg, theme::PAPER_WHITE, theme::CHARCOAL_DEEP)
-                        } else {
-                            match status {
-                                iced::widget::button::Status::Hovered => (
-                                    iced::Color::from_rgba(0.9, 0.2, 0.25, 0.15),
-                                    if is_dark { theme::PAPER_WHITE } else { theme::CHARCOAL_DEEP },
-                                    active_bg
-                                ),
-                                _ => (
-                                    theme::CHARCOAL_DEEP,
-                                    theme::PAPER_WHITE,
-                                    theme::PAPER_WHITE
-                                )
+                    .style(
+                        move |theme_ref: &iced::Theme, status: iced::widget::button::Status| {
+                            let is_dark = theme_ref.palette().background.r < 0.5;
+                            let active_bg = iced::Color::from_rgb(0.9, 0.2, 0.25); // Vibrant Red
+
+                            let (bg, fg, border) = if is_discard_active {
+                                (active_bg, theme::PAPER_WHITE, theme::CHARCOAL_DEEP)
+                            } else {
+                                match status {
+                                    iced::widget::button::Status::Hovered => (
+                                        iced::Color::from_rgba(0.9, 0.2, 0.25, 0.15),
+                                        if is_dark {
+                                            theme::PAPER_WHITE
+                                        } else {
+                                            theme::CHARCOAL_DEEP
+                                        },
+                                        active_bg,
+                                    ),
+                                    _ => (
+                                        theme::CHARCOAL_DEEP,
+                                        theme::PAPER_WHITE,
+                                        theme::PAPER_WHITE,
+                                    ),
+                                }
+                            };
+
+                            iced::widget::button::Style {
+                                background: Some(iced::Background::Color(bg)),
+                                text_color: fg,
+                                border: iced::Border {
+                                    color: border,
+                                    width: 2.0,
+                                    radius: 0.0.into(),
+                                },
+                                ..Default::default()
                             }
-                        };
-                        
-                        iced::widget::button::Style {
-                            background: Some(iced::Background::Color(bg)),
-                            text_color: fg,
-                            border: iced::Border {
-                                color: border,
-                                width: 2.0,
-                                radius: 0.0.into(),
-                            },
-                            ..Default::default()
-                        }
-                    })
+                        },
+                    )
                     .on_press(Message::ToggleDiscard);
 
                     let keep_btn = button(
@@ -1182,55 +1350,56 @@ impl State {
                             .width(Length::Fill)
                             .height(Length::Fill)
                             .align_x(iced::alignment::Horizontal::Center)
-                            .align_y(iced::alignment::Vertical::Center)
+                            .align_y(iced::alignment::Vertical::Center),
                     )
                     .width(Length::Fixed(38.0))
                     .height(Length::Fixed(38.0))
                     .padding(0)
-                    .style(move |theme_ref: &iced::Theme, status: iced::widget::button::Status| {
-                        let is_dark = theme_ref.palette().background.r < 0.5;
-                        let active_bg = iced::Color::from_rgb(0.12, 0.8, 0.43); // Vibrant Green
-                        
-                        let (bg, fg, border) = if is_keep_active {
-                            (active_bg, theme::PAPER_WHITE, theme::CHARCOAL_DEEP)
-                        } else {
-                            match status {
-                                iced::widget::button::Status::Hovered => (
-                                    iced::Color::from_rgba(0.12, 0.8, 0.43, 0.15),
-                                    if is_dark { theme::PAPER_WHITE } else { theme::CHARCOAL_DEEP },
-                                    active_bg
-                                ),
-                                _ => (
-                                    theme::CHARCOAL_DEEP,
-                                    theme::PAPER_WHITE,
-                                    theme::PAPER_WHITE
-                                )
+                    .style(
+                        move |theme_ref: &iced::Theme, status: iced::widget::button::Status| {
+                            let is_dark = theme_ref.palette().background.r < 0.5;
+                            let active_bg = iced::Color::from_rgb(0.12, 0.8, 0.43); // Vibrant Green
+
+                            let (bg, fg, border) = if is_keep_active {
+                                (active_bg, theme::PAPER_WHITE, theme::CHARCOAL_DEEP)
+                            } else {
+                                match status {
+                                    iced::widget::button::Status::Hovered => (
+                                        iced::Color::from_rgba(0.12, 0.8, 0.43, 0.15),
+                                        if is_dark {
+                                            theme::PAPER_WHITE
+                                        } else {
+                                            theme::CHARCOAL_DEEP
+                                        },
+                                        active_bg,
+                                    ),
+                                    _ => (
+                                        theme::CHARCOAL_DEEP,
+                                        theme::PAPER_WHITE,
+                                        theme::PAPER_WHITE,
+                                    ),
+                                }
+                            };
+
+                            iced::widget::button::Style {
+                                background: Some(iced::Background::Color(bg)),
+                                text_color: fg,
+                                border: iced::Border {
+                                    color: border,
+                                    width: 2.0,
+                                    radius: 0.0.into(),
+                                },
+                                ..Default::default()
                             }
-                        };
-                        
-                        iced::widget::button::Style {
-                            background: Some(iced::Background::Color(bg)),
-                            text_color: fg,
-                            border: iced::Border {
-                                color: border,
-                                width: 2.0,
-                                radius: 0.0.into(),
-                            },
-                            ..Default::default()
-                        }
-                    })
+                        },
+                    )
                     .on_press(Message::ToggleKeep);
 
-                    let actions = row![
-                        discard_btn,
-                        keep_btn,
-                    ]
-                    .spacing(6)
-                    .align_y(Alignment::Center);
+                    let actions = row![discard_btn, keep_btn,]
+                        .spacing(6)
+                        .align_y(Alignment::Center);
 
-                    let actions_card = container(actions)
-                        .padding(8)
-                        .style(brutalist_card_style);
+                    let actions_card = container(actions).padding(8).style(brutalist_card_style);
 
                     let actions_overlay = container(
                         container(actions_card)
@@ -1240,7 +1409,7 @@ impl State {
                                 bottom: 5.0,
                                 right: 5.0,
                             })
-                            .style(brutalist_card_shadow_style)
+                            .style(brutalist_card_shadow_style),
                     )
                     .width(Length::Fill)
                     .height(Length::Fill)
@@ -1269,39 +1438,45 @@ impl State {
                     .width(Length::Fill)
                     .style(move |theme: &iced::Theme| {
                         let is_dark = theme.palette().background.r < 0.5;
-                        let line_color = if is_dark { crate::ui::theme::PAPER_WHITE } else { crate::ui::theme::CHARCOAL_DEEP };
+                        let line_color = if is_dark {
+                            crate::ui::theme::PAPER_WHITE
+                        } else {
+                            crate::ui::theme::CHARCOAL_DEEP
+                        };
                         iced::widget::container::Style {
                             background: Some(iced::Background::Color(line_color)),
                             ..iced::widget::container::Style::default()
                         }
                     });
-                
+
                 content_col = content_col.push(divider);
 
                 let mut filmstrip = row![].spacing(10);
-                
+
                 for (idx, item) in self.items.iter().enumerate() {
                     let is_selected = self.selected_index == Some(idx);
-                    
+
                     let content_stack = if let Some(handle) = &item.thumbnail {
                         let img = image(handle.clone())
                             .width(Length::Fixed(120.0))
                             .height(Length::Fixed(120.0));
-                            
+
                         let (circle_color, text_val) = match item.action {
                             SortAction::Keep => (Some(iced::Color::from_rgb(0.12, 0.8, 0.43)), "K"),
-                            SortAction::Discard => (Some(iced::Color::from_rgb(0.9, 0.2, 0.25)), "D"),
+                            SortAction::Discard => {
+                                (Some(iced::Color::from_rgb(0.9, 0.2, 0.25)), "D")
+                            }
                             SortAction::Unsorted => (None, ""),
                         };
-                        
+
                         let mut stack_children = vec![img.into()];
-                        
+
                         if let Some(color) = circle_color {
                             let indicator = container(
                                 text(text_val)
                                     .size(9)
                                     .font(bold_font())
-                                    .color(iced::Color::BLACK)
+                                    .color(iced::Color::BLACK),
                             )
                             .padding(iced::Padding {
                                 top: 2.0,
@@ -1318,20 +1493,20 @@ impl State {
                                 },
                                 ..iced::widget::container::Style::default()
                             });
-                                
+
                             let overlay = container(indicator)
                                 .width(Length::Fill)
                                 .height(Length::Fill)
                                 .align_x(iced::alignment::Horizontal::Right)
                                 .align_y(iced::alignment::Vertical::Bottom)
                                 .padding(6);
-                                
+
                             stack_children.push(overlay.into());
                         }
-                        
+
                         iced::widget::stack(stack_children)
-                             .width(Length::Fixed(120.0))
-                             .height(Length::Fixed(120.0))
+                            .width(Length::Fixed(120.0))
+                            .height(Length::Fixed(120.0))
                     } else {
                         let spinner = get_spinner_char(self.spinner_tick);
                         let placeholder = container(
@@ -1340,7 +1515,7 @@ impl State {
                                 text("LOADING...").size(8).font(bold_font()),
                             ]
                             .spacing(6)
-                            .align_x(Alignment::Center)
+                            .align_x(Alignment::Center),
                         )
                         .width(Length::Fixed(120.0))
                         .height(Length::Fixed(120.0))
@@ -1358,52 +1533,53 @@ impl State {
                                 ..iced::widget::container::Style::default()
                             }
                         });
-                        
+
                         iced::widget::stack(vec![placeholder.into()])
                             .width(Length::Fixed(120.0))
                             .height(Length::Fixed(120.0))
                     };
-                    
-                    let styled_container = container(content_stack)
-                        .padding(3)
-                        .style(move |theme: &iced::Theme| {
-                            let bg = theme.palette().background;
-                            let is_dark = theme.palette().background.r < 0.5;
-                            
-                            let border_color = if is_selected {
-                                crate::ui::theme::HOT_PINK
-                            } else {
-                                if is_dark {
-                                    crate::ui::theme::PAPER_WHITE
+
+                    let styled_container =
+                        container(content_stack)
+                            .padding(3)
+                            .style(move |theme: &iced::Theme| {
+                                let bg = theme.palette().background;
+                                let is_dark = theme.palette().background.r < 0.5;
+
+                                let border_color = if is_selected {
+                                    crate::ui::theme::HOT_PINK
                                 } else {
-                                    crate::ui::theme::CHARCOAL_DEEP
+                                    if is_dark {
+                                        crate::ui::theme::PAPER_WHITE
+                                    } else {
+                                        crate::ui::theme::CHARCOAL_DEEP
+                                    }
+                                };
+
+                                iced::widget::container::Style {
+                                    background: Some(iced::Background::Color(bg)),
+                                    border: iced::Border {
+                                        color: border_color,
+                                        width: 4.0,
+                                        radius: 0.0.into(),
+                                    },
+                                    ..iced::widget::container::Style::default()
                                 }
-                            };
-                            
-                            iced::widget::container::Style {
-                                background: Some(iced::Background::Color(bg)),
-                                border: iced::Border {
-                                    color: border_color,
-                                    width: 4.0,
-                                    radius: 0.0.into(),
-                                },
-                                ..iced::widget::container::Style::default()
-                            }
-                        });
-                        
+                            });
+
                     let content = button(styled_container)
                         .padding(0)
                         .style(iced::widget::button::text)
                         .on_press(Message::Select(idx));
-                        
+
                     filmstrip = filmstrip.push(content);
                 }
-                
+
                 let filmstrip_scrollable = scrollable(container(filmstrip).padding(5))
                     .direction(scrollable::Direction::Horizontal(Default::default()))
                     .width(Length::Fill)
                     .height(Length::Fixed(150.0));
-                
+
                 content_col = content_col.push(filmstrip_scrollable);
             }
 

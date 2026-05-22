@@ -8,7 +8,7 @@ pub fn run() -> iced::Result {
     iced::application(
         PhotoSortApp::new_boot,
         PhotoSortApp::update,
-        PhotoSortApp::view
+        PhotoSortApp::view,
     )
     .title("PhotoSort")
     .theme(PhotoSortApp::theme)
@@ -72,19 +72,24 @@ impl PhotoSortApp {
         match message {
             Message::TabSelected(tab) => {
                 self.active_tab = tab;
-                
+
                 if self.active_tab == Tab::Sort {
-                    return self.sort_state.refresh(&self.config).map(Message::SortMessage);
+                    return self
+                        .sort_state
+                        .refresh(&self.config)
+                        .map(Message::SortMessage);
                 }
-                
+
                 Task::none()
             }
-            Message::ImportMessage(msg) => {
-                self.import_state.update(msg, &self.config).map(Message::ImportMessage)
-            }
-            Message::SortMessage(msg) => {
-                self.sort_state.update(msg, &self.config).map(Message::SortMessage)
-            }
+            Message::ImportMessage(msg) => self
+                .import_state
+                .update(msg, &self.config)
+                .map(Message::ImportMessage),
+            Message::SortMessage(msg) => self
+                .sort_state
+                .update(msg, &self.config)
+                .map(Message::SortMessage),
             Message::SettingsMessage(msg) => {
                 let (task, new_config) = self.settings_state.update(msg, &self.config);
                 if let Some(c) = new_config {

@@ -1,10 +1,25 @@
-use iced::theme::Palette;
-use iced::Color;
 use crate::core::config::AppTheme;
+use iced::Color;
+use iced::theme::Palette;
 
-pub const PAPER_WHITE: Color = Color { r: 0xF4 as f32 / 255.0, g: 0xF4 as f32 / 255.0, b: 0xF0 as f32 / 255.0, a: 1.0 };
-pub const CHARCOAL_DEEP: Color = Color { r: 0x11 as f32 / 255.0, g: 0x11 as f32 / 255.0, b: 0x11 as f32 / 255.0, a: 1.0 };
-pub const HOT_PINK: Color = Color { r: 0xFE as f32 / 255.0, g: 0x2C as f32 / 255.0, b: 0x55 as f32 / 255.0, a: 1.0 };
+pub const PAPER_WHITE: Color = Color {
+    r: 0xF4 as f32 / 255.0,
+    g: 0xF4 as f32 / 255.0,
+    b: 0xF0 as f32 / 255.0,
+    a: 1.0,
+};
+pub const CHARCOAL_DEEP: Color = Color {
+    r: 0x11 as f32 / 255.0,
+    g: 0x11 as f32 / 255.0,
+    b: 0x11 as f32 / 255.0,
+    a: 1.0,
+};
+pub const HOT_PINK: Color = Color {
+    r: 0xFE as f32 / 255.0,
+    g: 0x2C as f32 / 255.0,
+    b: 0x55 as f32 / 255.0,
+    a: 1.0,
+};
 pub fn get_theme(app_theme: AppTheme) -> iced::Theme {
     match app_theme {
         AppTheme::Light => iced::Theme::custom(
@@ -22,8 +37,8 @@ pub fn get_theme(app_theme: AppTheme) -> iced::Theme {
             "Brutalist Dark".to_string(),
             Palette {
                 background: CHARCOAL_DEEP, // Dark Black
-                text: PAPER_WHITE,      // Paper White
-                primary: HOT_PINK,    // Hot Pink Accent
+                text: PAPER_WHITE,         // Paper White
+                primary: HOT_PINK,         // Hot Pink Accent
                 success: HOT_PINK,
                 danger: HOT_PINK,
                 warning: HOT_PINK,
@@ -32,7 +47,10 @@ pub fn get_theme(app_theme: AppTheme) -> iced::Theme {
     }
 }
 
-pub fn brutalist_button_style(_theme: &iced::Theme, status: iced::widget::button::Status) -> iced::widget::button::Style {
+pub fn brutalist_button_style(
+    _theme: &iced::Theme,
+    status: iced::widget::button::Status,
+) -> iced::widget::button::Style {
     let (bg, text_color, border_color) = match status {
         iced::widget::button::Status::Hovered => (
             HOT_PINK, // Hot Pink
@@ -44,15 +62,11 @@ pub fn brutalist_button_style(_theme: &iced::Theme, status: iced::widget::button
             PAPER_WHITE,
             PAPER_WHITE,
         ),
-        iced::widget::button::Status::Disabled => (
-            PAPER_WHITE,
-            CHARCOAL_DEEP,
-            CHARCOAL_DEEP,
-        ),
+        iced::widget::button::Status::Disabled => (PAPER_WHITE, CHARCOAL_DEEP, CHARCOAL_DEEP),
         _ => (
             CHARCOAL_DEEP, // Dark background
-            PAPER_WHITE, // Off-white text
-            PAPER_WHITE, // Off-white border
+            PAPER_WHITE,   // Off-white text
+            PAPER_WHITE,   // Off-white border
         ),
     };
 
@@ -69,18 +83,17 @@ pub fn brutalist_button_style(_theme: &iced::Theme, status: iced::widget::button
     }
 }
 
-pub fn brutalist_light_button_style(_theme: &iced::Theme, status: iced::widget::button::Status) -> iced::widget::button::Style {
+pub fn brutalist_light_button_style(
+    _theme: &iced::Theme,
+    status: iced::widget::button::Status,
+) -> iced::widget::button::Style {
     let (bg, text_color, border_color) = match status {
         iced::widget::button::Status::Hovered => (
             HOT_PINK, // Hot Pink
             PAPER_WHITE,
             CHARCOAL_DEEP,
         ),
-        iced::widget::button::Status::Pressed => (
-            HOT_PINK,
-            PAPER_WHITE,
-            CHARCOAL_DEEP,
-        ),
+        iced::widget::button::Status::Pressed => (HOT_PINK, PAPER_WHITE, CHARCOAL_DEEP),
         _ => (
             PAPER_WHITE, // Light background
             CHARCOAL_DEEP,
@@ -119,29 +132,23 @@ pub fn icon_font() -> iced::Font {
 pub const ICON_REFRESH: &str = "\u{e5d5}";
 pub const ICON_ZOOM_IN: &str = "\u{e8ff}";
 pub const ICON_ZOOM_OUT: &str = "\u{e900}";
-pub const ICON_RESET: &str = "\u{e3e4}";      // fit_screen
-pub const ICON_KEEP: &str = "\u{e876}";       // check
-pub const ICON_DISCARD: &str = "\u{e872}";    // delete
-pub const ICON_APPLY: &str = "\u{e86c}";      // check_circle / done_all
-pub const ICON_INFO: &str = "\u{e88e}";       // info
+pub const ICON_RESET: &str = "\u{e3e4}"; // fit_screen
+pub const ICON_KEEP: &str = "\u{e876}"; // check
+pub const ICON_DISCARD: &str = "\u{e872}"; // delete
+pub const ICON_APPLY: &str = "\u{e86c}"; // check_circle / done_all
+pub const ICON_INFO: &str = "\u{e88e}"; // info
 pub const ICON_CHEVRON_LEFT: &str = "\u{e5cb}";
 pub const ICON_CHEVRON_RIGHT: &str = "\u{e5cc}";
 
-
-pub fn brutalist_radio_style(theme: &iced::Theme, _status: iced::widget::radio::Status) -> iced::widget::radio::Style {
+pub fn brutalist_radio_style(
+    theme: &iced::Theme,
+    _status: iced::widget::radio::Status,
+) -> iced::widget::radio::Style {
     let is_dark = theme.palette().background.r < 0.5;
-    
-    let text_color = if is_dark {
-        CHARCOAL_DEEP
-    } else {
-        PAPER_WHITE
-    };
 
-    let bg_color = if is_dark {
-        PAPER_WHITE
-    } else {
-        CHARCOAL_DEEP
-    };
+    let text_color = if is_dark { CHARCOAL_DEEP } else { PAPER_WHITE };
+
+    let bg_color = if is_dark { PAPER_WHITE } else { CHARCOAL_DEEP };
 
     iced::widget::radio::Style {
         background: iced::Background::Color(bg_color),
@@ -206,7 +213,10 @@ pub fn brutalist_card_shadow_style(theme: &iced::Theme) -> iced::widget::contain
     }
 }
 
-pub fn brutalist_tab_bar_style(theme: &iced::Theme, status: iced_aw::style::Status) -> iced_aw::style::tab_bar::Style {
+pub fn brutalist_tab_bar_style(
+    theme: &iced::Theme,
+    status: iced_aw::style::Status,
+) -> iced_aw::style::tab_bar::Style {
     let is_dark = theme.palette().background.r < 0.5;
     let border_color = if is_dark { PAPER_WHITE } else { CHARCOAL_DEEP };
     let _bg_color = if is_dark { CHARCOAL_DEEP } else { PAPER_WHITE };
@@ -218,11 +228,7 @@ pub fn brutalist_tab_bar_style(theme: &iced::Theme, status: iced_aw::style::Stat
             fg_color, // Paper White text
             border_color,
         ),
-        iced_aw::style::Status::Hovered => (
-            HOT_PINK,
-            PAPER_WHITE,
-            border_color,
-        ),
+        iced_aw::style::Status::Hovered => (HOT_PINK, PAPER_WHITE, border_color),
         iced_aw::style::Status::Disabled => (
             if is_dark { CHARCOAL_DEEP } else { PAPER_WHITE },
             HOT_PINK,

@@ -1,5 +1,5 @@
-use std::path::PathBuf;
 use chrono::NaiveDateTime;
+use std::path::PathBuf;
 
 #[derive(Debug, Clone)]
 pub struct Photo {

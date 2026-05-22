@@ -1,8 +1,11 @@
-use iced::widget::{button, column, text, row, radio, container};
-use iced::{Element, Task, Length};
+use crate::core::config::{AppTheme, Config};
+use crate::ui::theme::{
+    bold_font, brutalist_button_style, brutalist_card_shadow_style, brutalist_card_style,
+    brutalist_radio_style,
+};
+use iced::widget::{button, column, container, radio, row, text};
+use iced::{Element, Length, Task};
 use std::path::PathBuf;
-use crate::core::config::{Config, AppTheme};
-use crate::ui::theme::{brutalist_button_style, bold_font, brutalist_radio_style, brutalist_card_style, brutalist_card_shadow_style};
 
 pub struct State {
     to_sort_dir: Option<PathBuf>,
@@ -33,23 +36,33 @@ impl State {
         }
     }
 
-    pub fn update(&mut self, message: Message, _config: &Config) -> (Task<Message>, Option<Config>) {
+    pub fn update(
+        &mut self,
+        message: Message,
+        _config: &Config,
+    ) -> (Task<Message>, Option<Config>) {
         match message {
             Message::SelectToSortDir => {
                 let task = Task::perform(
                     async {
-                        rfd::AsyncFileDialog::new().pick_folder().await.map(|f| f.path().to_path_buf())
+                        rfd::AsyncFileDialog::new()
+                            .pick_folder()
+                            .await
+                            .map(|f| f.path().to_path_buf())
                     },
-                    |p| Message::DirSelected(p, DirType::ToSort)
+                    |p| Message::DirSelected(p, DirType::ToSort),
                 );
                 (task, None)
             }
             Message::SelectLibraryDir => {
                 let task = Task::perform(
                     async {
-                        rfd::AsyncFileDialog::new().pick_folder().await.map(|f| f.path().to_path_buf())
+                        rfd::AsyncFileDialog::new()
+                            .pick_folder()
+                            .await
+                            .map(|f| f.path().to_path_buf())
                     },
-                    |p| Message::DirSelected(p, DirType::Library)
+                    |p| Message::DirSelected(p, DirType::Library),
                 );
                 (task, None)
             }
@@ -83,38 +96,62 @@ impl State {
     pub fn view(&self) -> Element<'_, Message> {
         let settings_info = column![
             row![
-                text(format!("TO SORT: {:?}", self.to_sort_dir.as_ref().map(|p| p.to_string_lossy().to_string()).unwrap_or_else(|| "NOT SET".to_string())))
-                    .font(bold_font())
-                    .size(14),
+                text(format!(
+                    "TO SORT: {:?}",
+                    self.to_sort_dir
+                        .as_ref()
+                        .map(|p| p.to_string_lossy().to_string())
+                        .unwrap_or_else(|| "NOT SET".to_string())
+                ))
+                .font(bold_font())
+                .size(14),
                 iced::widget::Space::new().width(Length::Fill),
                 button(text("CHANGE").font(bold_font()))
                     .on_press(Message::SelectToSortDir)
                     .padding(8)
                     .style(brutalist_button_style),
-            ].align_y(iced::Alignment::Center),
-            
+            ]
+            .align_y(iced::Alignment::Center),
             row![
-                text(format!("LIBRARY: {:?}", self.library_dir.as_ref().map(|p| p.to_string_lossy().to_string()).unwrap_or_else(|| "NOT SET".to_string())))
-                    .font(bold_font())
-                    .size(14),
+                text(format!(
+                    "LIBRARY: {:?}",
+                    self.library_dir
+                        .as_ref()
+                        .map(|p| p.to_string_lossy().to_string())
+                        .unwrap_or_else(|| "NOT SET".to_string())
+                ))
+                .font(bold_font())
+                .size(14),
                 iced::widget::Space::new().width(Length::Fill),
                 button(text("CHANGE").font(bold_font()))
                     .on_press(Message::SelectLibraryDir)
                     .padding(8)
                     .style(brutalist_button_style),
-            ].align_y(iced::Alignment::Center),
-            
+            ]
+            .align_y(iced::Alignment::Center),
             iced::widget::Space::new().height(10),
             text("THEME").font(bold_font()).size(16),
             row![
-                radio("Light", AppTheme::Light, Some(self.theme), Message::ThemeToggled)
-                    .font(bold_font())
-                    .style(brutalist_radio_style),
-                radio("Dark", AppTheme::Dark, Some(self.theme), Message::ThemeToggled)
-                    .font(bold_font())
-                    .style(brutalist_radio_style),
-            ].spacing(20)
-        ].spacing(20);
+                radio(
+                    "Light",
+                    AppTheme::Light,
+                    Some(self.theme),
+                    Message::ThemeToggled
+                )
+                .font(bold_font())
+                .style(brutalist_radio_style),
+                radio(
+                    "Dark",
+                    AppTheme::Dark,
+                    Some(self.theme),
+                    Message::ThemeToggled
+                )
+                .font(bold_font())
+                .style(brutalist_radio_style),
+            ]
+            .spacing(20)
+        ]
+        .spacing(20);
 
         let inner_card = container(settings_info)
             .padding(20)
@@ -131,12 +168,9 @@ impl State {
             })
             .style(brutalist_card_shadow_style);
 
-        column![
-            text("SETTINGS").font(bold_font()).size(28),
-            card
-        ]
-        .spacing(20)
-        .padding(20)
-        .into()
+        column![text("SETTINGS").font(bold_font()).size(28), card]
+            .spacing(20)
+            .padding(20)
+            .into()
     }
 }

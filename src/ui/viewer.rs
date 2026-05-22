@@ -1,6 +1,6 @@
 use iced::widget::canvas::{Action, Event, Frame, Geometry, Program};
-use iced::{mouse, Point, Rectangle, Size, Vector, Theme, Renderer};
 use iced::widget::image;
+use iced::{Point, Rectangle, Renderer, Size, Theme, Vector, mouse};
 use iced_core::image as core_image;
 use std::sync::{Arc, Mutex};
 
@@ -10,7 +10,7 @@ pub struct ViewerState {
     pub offset: Vector,
     pub is_dragging: bool,
     pub last_cursor: Option<Point>,
-    
+
     pub rendered_zoom: Arc<Mutex<f32>>,
     pub rendered_offset: Arc<Mutex<Vector>>,
     pub bounds: Arc<Mutex<Option<Size>>>,
@@ -63,10 +63,19 @@ impl<'a> Program<Message, Theme, Renderer> for PreviewCanvas<'a> {
                     mouse::ScrollDelta::Lines { y, .. } => *y,
                     mouse::ScrollDelta::Pixels { y, .. } => *y / 10.0,
                 };
-                
-                let multiplier = if y > 0.0 { 1.1 } else if y < 0.0 { 0.9 } else { 1.0 };
+
+                let multiplier = if y > 0.0 {
+                    1.1
+                } else if y < 0.0 {
+                    0.9
+                } else {
+                    1.0
+                };
                 if multiplier != 1.0 {
-                    return Some(Action::publish(Message::Zoomed(multiplier, cursor_position_relative)));
+                    return Some(Action::publish(Message::Zoomed(
+                        multiplier,
+                        cursor_position_relative,
+                    )));
                 }
             }
             Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
@@ -87,17 +96,17 @@ impl<'a> Program<Message, Theme, Renderer> for PreviewCanvas<'a> {
         _cursor: mouse::Cursor,
     ) -> Vec<Geometry<Renderer>> {
         let mut frame = Frame::new(renderer, bounds.size());
-        
+
         let (img_w, img_h) = (self.dimensions.0 as f32, self.dimensions.1 as f32);
-        
+
         let mut zoom = self.state.zoom;
         let mut offset = self.state.offset;
-        
+
         if self.is_fit {
             let scale_x = bounds.width / img_w;
             let scale_y = bounds.height / img_h;
             zoom = scale_x.min(scale_y);
-            
+
             let scaled_w = img_w * zoom;
             let scaled_h = img_h * zoom;
             offset = Vector::new(
@@ -105,16 +114,22 @@ impl<'a> Program<Message, Theme, Renderer> for PreviewCanvas<'a> {
                 (bounds.height - scaled_h) / 2.0,
             );
         }
-        
-        if let Ok(mut r_z) = self.state.rendered_zoom.lock() { *r_z = zoom; }
-        if let Ok(mut r_o) = self.state.rendered_offset.lock() { *r_o = offset; }
-        if let Ok(mut b) = self.state.bounds.lock() { *b = Some(bounds.size()); }
-        
+
+        if let Ok(mut r_z) = self.state.rendered_zoom.lock() {
+            *r_z = zoom;
+        }
+        if let Ok(mut r_o) = self.state.rendered_offset.lock() {
+            *r_o = offset;
+        }
+        if let Ok(mut b) = self.state.bounds.lock() {
+            *b = Some(bounds.size());
+        }
+
         frame.translate(offset);
         frame.scale(zoom);
-        
+
         frame.draw_image(
-            Rectangle::new(Point::ORIGIN, Size::new(img_w, img_h)), 
+            Rectangle::new(Point::ORIGIN, Size::new(img_w, img_h)),
             core_image::Image {
                 handle: self.handle.clone(),
                 filter_method: core_image::FilterMethod::Linear,
@@ -122,9 +137,9 @@ impl<'a> Program<Message, Theme, Renderer> for PreviewCanvas<'a> {
                 border_radius: iced_core::border::Radius::from(0.0),
                 opacity: 1.0,
                 snap: false,
-            }
+            },
         );
-        
+
         vec![frame.into_geometry()]
     }
 }
