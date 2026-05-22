@@ -123,6 +123,9 @@ pub const ICON_RESET: &str = "\u{e3e4}";      // fit_screen
 pub const ICON_KEEP: &str = "\u{e876}";       // check
 pub const ICON_DISCARD: &str = "\u{e872}";    // delete
 pub const ICON_APPLY: &str = "\u{e86c}";      // check_circle / done_all
+pub const ICON_INFO: &str = "\u{e88e}";       // info
+pub const ICON_CHEVRON_LEFT: &str = "\u{e5cb}";
+pub const ICON_CHEVRON_RIGHT: &str = "\u{e5cc}";
 
 
 pub fn brutalist_radio_style(theme: &iced::Theme, _status: iced::widget::radio::Status) -> iced::widget::radio::Style {
