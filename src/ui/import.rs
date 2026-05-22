@@ -106,10 +106,9 @@ impl State {
                 let target = ext.to_lowercase();
                 for item in &mut self.photos_to_import {
                     if let Some(item_ext) = item.0.source_path.extension().and_then(|e| e.to_str())
+                        && item_ext.to_lowercase() == target
                     {
-                        if item_ext.to_lowercase() == target {
-                            item.1 = true;
-                        }
+                        item.1 = true;
                     }
                 }
                 self.update_status();
@@ -119,10 +118,9 @@ impl State {
                 let target = ext.to_lowercase();
                 for item in &mut self.photos_to_import {
                     if let Some(item_ext) = item.0.source_path.extension().and_then(|e| e.to_str())
+                        && item_ext.to_lowercase() == target
                     {
-                        if item_ext.to_lowercase() == target {
-                            item.1 = false;
-                        }
+                        item.1 = false;
                     }
                 }
                 self.update_status();

@@ -21,14 +21,13 @@ impl Importer {
             {
                 continue;
             }
-            if path.is_file() {
-                if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-                    if extensions.contains(&ext.to_lowercase().as_str()) {
-                        let mut photo = Photo::new(path.to_path_buf());
-                        Self::extract_exif(&mut photo);
-                        photos.push(photo);
-                    }
-                }
+            if path.is_file()
+                && let Some(ext) = path.extension().and_then(|e| e.to_str())
+                && extensions.contains(&ext.to_lowercase().as_str())
+            {
+                let mut photo = Photo::new(path.to_path_buf());
+                Self::extract_exif(&mut photo);
+                photos.push(photo);
             }
         }
         photos
@@ -39,30 +38,22 @@ impl Importer {
             let mut bufreader = std::io::BufReader::new(file);
             let exif_reader = exif::Reader::new();
             if let Ok(exif) = exif_reader.read_from_container(&mut bufreader) {
-                if let Some(field) = exif.get_field(exif::Tag::Model, exif::In::PRIMARY) {
-                    if let exif::Value::Ascii(ref vec) = field.value {
-                        if let Some(val) = vec.first() {
-                            if let Ok(s) = std::str::from_utf8(val) {
-                                photo.camera_model = Some(s.trim().to_string());
-                            }
-                        }
-                    }
+                if let Some(field) = exif.get_field(exif::Tag::Model, exif::In::PRIMARY)
+                    && let exif::Value::Ascii(ref vec) = field.value
+                    && let Some(val) = vec.first()
+                    && let Ok(s) = std::str::from_utf8(val)
+                {
+                    photo.camera_model = Some(s.trim().to_string());
                 }
 
                 if let Some(field) = exif.get_field(exif::Tag::DateTimeOriginal, exif::In::PRIMARY)
+                    && let exif::Value::Ascii(ref vec) = field.value
+                    && let Some(val) = vec.first()
+                    && let Ok(s) = std::str::from_utf8(val)
+                    && let Ok(dt) =
+                        chrono::NaiveDateTime::parse_from_str(s.trim(), "%Y:%m:%d %H:%M:%S")
                 {
-                    if let exif::Value::Ascii(ref vec) = field.value {
-                        if let Some(val) = vec.first() {
-                            if let Ok(s) = std::str::from_utf8(val) {
-                                if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(
-                                    s.trim(),
-                                    "%Y:%m:%d %H:%M:%S",
-                                ) {
-                                    photo.date_taken = Some(dt);
-                                }
-                            }
-                        }
-                    }
+                    photo.date_taken = Some(dt);
                 }
             }
         }

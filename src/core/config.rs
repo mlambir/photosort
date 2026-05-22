@@ -1,16 +1,11 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub enum AppTheme {
     Light,
+    #[default]
     Dark,
-}
-
-impl Default for AppTheme {
-    fn default() -> Self {
-        AppTheme::Dark
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

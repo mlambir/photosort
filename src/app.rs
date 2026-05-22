@@ -33,6 +33,7 @@ pub enum Tab {
 }
 
 #[derive(Debug, Clone)]
+#[allow(clippy::enum_variant_names)]
 pub enum Message {
     TabSelected(Tab),
     ImportMessage(import::Message),
