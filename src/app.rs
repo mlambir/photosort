@@ -12,6 +12,7 @@ pub fn run() -> iced::Result {
     )
     .title("PhotoSort")
     .theme(PhotoSortApp::theme)
+    .font(include_bytes!("../assets/material-icons.ttf").as_slice())
     .subscription(PhotoSortApp::subscription)
     .run()
 }

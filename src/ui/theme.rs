@@ -108,6 +108,23 @@ pub fn bold_font() -> iced::Font {
     }
 }
 
+pub fn icon_font() -> iced::Font {
+    iced::Font {
+        family: iced::font::Family::Name("Material Icons"),
+        weight: iced::font::Weight::Normal,
+        ..Default::default()
+    }
+}
+
+pub const ICON_REFRESH: &str = "\u{e5d5}";
+pub const ICON_ZOOM_IN: &str = "\u{e8ff}";
+pub const ICON_ZOOM_OUT: &str = "\u{e900}";
+pub const ICON_RESET: &str = "\u{e3e4}";      // fit_screen
+pub const ICON_KEEP: &str = "\u{e876}";       // check
+pub const ICON_DISCARD: &str = "\u{e872}";    // delete
+pub const ICON_APPLY: &str = "\u{e86c}";      // check_circle / done_all
+
+
 pub fn brutalist_radio_style(theme: &iced::Theme, _status: iced::widget::radio::Status) -> iced::widget::radio::Style {
     let is_dark = theme.palette().background.r < 0.5;
     

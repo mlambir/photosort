@@ -2,7 +2,7 @@ use iced::widget::{button, column, row, text, image, container, scrollable, canv
 use iced::{Element, Task, Length, Alignment, Subscription};
 use crate::core::config::Config;
 use crate::ui::viewer::{self, ViewerState, PreviewCanvas};
-use crate::ui::theme::{brutalist_button_style, brutalist_light_button_style, bold_font, brutalist_card_style, brutalist_card_shadow_style};
+use crate::ui::theme::{self, brutalist_button_style, brutalist_light_button_style, bold_font, brutalist_card_style, brutalist_card_shadow_style};
 use std::path::PathBuf;
 use std::fs;
 use exif::{In, Tag, Reader};
@@ -54,7 +54,6 @@ pub struct State {
 pub enum Message {
     Refreshed(Vec<(PathBuf, String, u64)>),
     Select(usize),
-    SetAction(SortAction),
     ApplyChanges,
     ApplyComplete(()),
     ZoomIn,
@@ -647,13 +646,6 @@ impl State {
                 }
                 Task::none()
             }
-            Message::SetAction(action) => {
-                if let Some(idx) = self.selected_index {
-                    self.items[idx].action = action;
-                    self.update_status();
-                }
-                Task::none()
-            }
             Message::PrevImage => {
                 if let Some(idx) = self.selected_index {
                     if idx > 0 {
@@ -857,9 +849,27 @@ impl State {
         if !self.is_loading {
             header = header.push(iced::widget::Space::new().width(Length::Fill));
             header = header.push(
-                button(text("REFRESH THUMBNAILS").font(bold_font()))
+                button(
+                    row![
+                        text(theme::ICON_APPLY).font(theme::icon_font()).size(18),
+                        text("APPLY").font(bold_font()).size(13),
+                    ]
+                    .spacing(8)
+                    .align_y(Alignment::Center)
+                )
+                .on_press(Message::ApplyChanges)
+                .padding(iced::Padding {
+                    top: 10.0,
+                    bottom: 10.0,
+                    left: 15.0,
+                    right: 15.0,
+                })
+                .style(brutalist_light_button_style)
+            );
+            header = header.push(
+                button(text(theme::ICON_REFRESH).font(theme::icon_font()).size(20))
                     .on_press(Message::RefreshThumbnails)
-                    .padding(8)
+                    .padding(10)
                     .style(brutalist_button_style)
             );
         }
@@ -961,109 +971,208 @@ impl State {
                 if idx < self.items.len() {
                     let item = &self.items[idx];
                     
-                    let inner_details = container(
-                        column![
-                            text(format!("FILE: {}", item.filename.to_uppercase()))
-                                .size(14)
-                                .font(bold_font()),
-                            text(format!("SIZE: {:.2} MB", item.file_size_bytes as f64 / 1_048_576.0))
-                                .size(12)
-                                .font(bold_font()),
-                            text(format!("DIMENSIONS: {} X {}", item.dimensions.0, item.dimensions.1))
-                                .size(12)
-                                .font(bold_font()),
-                        ]
-                        .spacing(6)
-                        .align_x(Alignment::Start)
+                    let zoom_controls = row![
+                        button(
+                            container(text(theme::ICON_ZOOM_OUT).font(theme::icon_font()).size(22))
+                                .width(Length::Fill)
+                                .height(Length::Fill)
+                                .align_x(iced::alignment::Horizontal::Center)
+                                .align_y(iced::alignment::Vertical::Center)
+                        )
+                        .width(Length::Fixed(50.0))
+                        .height(Length::Fixed(50.0))
+                        .padding(0)
+                        .style(brutalist_button_style)
+                        .on_press(Message::ZoomOut),
+                        button(
+                            container(text(theme::ICON_RESET).font(theme::icon_font()).size(22))
+                                .width(Length::Fill)
+                                .height(Length::Fill)
+                                .align_x(iced::alignment::Horizontal::Center)
+                                .align_y(iced::alignment::Vertical::Center)
+                        )
+                        .width(Length::Fixed(50.0))
+                        .height(Length::Fixed(50.0))
+                        .padding(0)
+                        .style(brutalist_button_style)
+                        .on_press(Message::ResetZoom),
+                        button(
+                            container(text(theme::ICON_ZOOM_IN).font(theme::icon_font()).size(22))
+                                .width(Length::Fill)
+                                .height(Length::Fill)
+                                .align_x(iced::alignment::Horizontal::Center)
+                                .align_y(iced::alignment::Vertical::Center)
+                        )
+                        .width(Length::Fixed(50.0))
+                        .height(Length::Fixed(50.0))
+                        .padding(0)
+                        .style(brutalist_button_style)
+                        .on_press(Message::ZoomIn),
+                    ].spacing(10);
+                    
+                    let is_discard_active = item.action == SortAction::Discard;
+                    let is_keep_active = item.action == SortAction::Keep;
+
+                    let discard_btn = button(
+                        container(text(theme::ICON_DISCARD).font(theme::icon_font()).size(24))
+                            .width(Length::Fill)
+                            .height(Length::Fill)
+                            .align_x(iced::alignment::Horizontal::Center)
+                            .align_y(iced::alignment::Vertical::Center)
                     )
-                    .padding(12)
-                    .width(Length::Fill)
+                    .width(Length::Fixed(50.0))
+                    .height(Length::Fixed(50.0))
+                    .padding(0)
+                    .style(move |theme_ref: &iced::Theme, status: iced::widget::button::Status| {
+                        let is_dark = theme_ref.palette().background.r < 0.5;
+                        let active_bg = iced::Color::from_rgb(0.9, 0.2, 0.25); // Vibrant Red
+                        
+                        let (bg, fg, border) = if is_discard_active {
+                            (active_bg, theme::PAPER_WHITE, theme::CHARCOAL_DEEP)
+                        } else {
+                            match status {
+                                iced::widget::button::Status::Hovered => (
+                                    iced::Color::from_rgba(0.9, 0.2, 0.25, 0.15),
+                                    if is_dark { theme::PAPER_WHITE } else { theme::CHARCOAL_DEEP },
+                                    active_bg
+                                ),
+                                _ => (
+                                    theme::CHARCOAL_DEEP,
+                                    theme::PAPER_WHITE,
+                                    theme::PAPER_WHITE
+                                )
+                            }
+                        };
+                        
+                        iced::widget::button::Style {
+                            background: Some(iced::Background::Color(bg)),
+                            text_color: fg,
+                            border: iced::Border {
+                                color: border,
+                                width: 2.0,
+                                radius: 0.0.into(),
+                            },
+                            ..Default::default()
+                        }
+                    })
+                    .on_press(Message::ToggleDiscard);
+
+                    let keep_btn = button(
+                        container(text(theme::ICON_KEEP).font(theme::icon_font()).size(24))
+                            .width(Length::Fill)
+                            .height(Length::Fill)
+                            .align_x(iced::alignment::Horizontal::Center)
+                            .align_y(iced::alignment::Vertical::Center)
+                    )
+                    .width(Length::Fixed(50.0))
+                    .height(Length::Fixed(50.0))
+                    .padding(0)
+                    .style(move |theme_ref: &iced::Theme, status: iced::widget::button::Status| {
+                        let is_dark = theme_ref.palette().background.r < 0.5;
+                        let active_bg = iced::Color::from_rgb(0.12, 0.8, 0.43); // Vibrant Green
+                        
+                        let (bg, fg, border) = if is_keep_active {
+                            (active_bg, theme::PAPER_WHITE, theme::CHARCOAL_DEEP)
+                        } else {
+                            match status {
+                                iced::widget::button::Status::Hovered => (
+                                    iced::Color::from_rgba(0.12, 0.8, 0.43, 0.15),
+                                    if is_dark { theme::PAPER_WHITE } else { theme::CHARCOAL_DEEP },
+                                    active_bg
+                                ),
+                                _ => (
+                                    theme::CHARCOAL_DEEP,
+                                    theme::PAPER_WHITE,
+                                    theme::PAPER_WHITE
+                                )
+                            }
+                        };
+                        
+                        iced::widget::button::Style {
+                            background: Some(iced::Background::Color(bg)),
+                            text_color: fg,
+                            border: iced::Border {
+                                color: border,
+                                width: 2.0,
+                                radius: 0.0.into(),
+                            },
+                            ..Default::default()
+                        }
+                    })
+                    .on_press(Message::ToggleKeep);
+
+                    let actions = row![
+                        discard_btn,
+                        keep_btn,
+                    ]
+                    .spacing(10)
+                    .align_y(Alignment::Center);
+                    
+                    let panel_card = container(
+                        column![
+                            column![
+                                text(item.filename.to_uppercase())
+                                    .size(10)
+                                    .font(bold_font()),
+                                text(format!("{:.2} MB", item.file_size_bytes as f64 / 1_048_576.0))
+                                    .size(10)
+                                    .font(bold_font()),
+                                text(format!("{} X {}", item.dimensions.0, item.dimensions.1))
+                                    .size(10)
+                                    .font(bold_font()),
+                            ]
+                            .spacing(5)
+                            .width(Length::Fill)
+                            .align_x(Alignment::Start),
+                            
+                            container(iced::widget::Space::new().height(2.0))
+                                .width(Length::Fill)
+                                .style(move |theme: &iced::Theme| {
+                                    let is_dark = theme.palette().background.r < 0.5;
+                                    let line_color = if is_dark { theme::CHARCOAL_DEEP } else { theme::PAPER_WHITE };
+                                    iced::widget::container::Style {
+                                        background: Some(iced::Background::Color(line_color)),
+                                        ..Default::default()
+                                    }
+                                }),
+                            
+                            zoom_controls,
+                            actions,
+                        ]
+                        .spacing(15)
+                        .align_x(Alignment::Center)
+                    )
+                    .width(Length::Fixed(210.0))
+                    .padding(15)
                     .style(brutalist_card_style);
                     
-                    let details_card = container(inner_details)
-                        .width(Length::Fill)
+                    container(panel_card)
                         .padding(iced::Padding {
                             top: 0.0,
                             left: 0.0,
-                            bottom: 6.0,
-                            right: 6.0,
+                            bottom: 8.0,
+                            right: 8.0,
                         })
-                        .style(brutalist_card_shadow_style);
-                        
-                    let zoom_controls = row![
-                        button(text("ZOOM OUT (-)").font(bold_font()))
-                            .padding(8)
-                            .style(brutalist_button_style)
-                            .on_press(Message::ZoomOut),
-                        button(text("RESET").font(bold_font()))
-                            .padding(8)
-                            .style(brutalist_button_style)
-                            .on_press(Message::ResetZoom),
-                        button(text("ZOOM IN (+)").font(bold_font()))
-                            .padding(8)
-                            .style(brutalist_button_style)
-                            .on_press(Message::ZoomIn),
-                    ].spacing(10);
-                    
-                    let actions = row![
-                        button(text("DISCARD").font(bold_font()))
-                            .padding(10)
-                            .style(brutalist_button_style)
-                            .on_press(Message::SetAction(SortAction::Discard)),
-                        button(text("UNSORTED").font(bold_font()))
-                            .padding(10)
-                            .style(brutalist_button_style)
-                            .on_press(Message::SetAction(SortAction::Unsorted)),
-                        button(text("KEEP").font(bold_font()))
-                            .padding(10)
-                            .style(brutalist_light_button_style)
-                            .on_press(Message::SetAction(SortAction::Keep)),
-                    ].spacing(20);
-                    
-                    let panel_col = column![
-                        details_card,
-                        text("ZOOM PREVIEW").font(bold_font()).size(12),
-                        zoom_controls,
-                        iced::widget::Space::new().height(10.0),
-                        text("SORT ACTION").font(bold_font()).size(12),
-                        actions,
-                        iced::widget::Space::new().height(Length::Fill),
-                        button(text("APPLY CHANGES").font(bold_font()))
-                            .on_press(Message::ApplyChanges)
-                            .padding(iced::Padding {
-                                top: 12.0,
-                                bottom: 12.0,
-                                left: 24.0,
-                                right: 24.0,
-                            })
-                            .width(Length::Fill)
-                            .style(brutalist_light_button_style)
-                    ]
-                    .spacing(15)
-                    .align_x(Alignment::Center);
-                    
-                    container(panel_col)
-                        .width(Length::Fixed(350.0))
-                        .height(Length::Fill)
+                        .style(brutalist_card_shadow_style)
                         .into()
                 } else {
-                    container(iced::widget::Space::new())
-                        .width(Length::Fixed(350.0))
-                        .height(Length::Fill)
-                        .into()
+                    container(iced::widget::Space::new()).into()
                 }
             } else {
-                container(iced::widget::Space::new())
-                    .width(Length::Fixed(350.0))
-                    .height(Length::Fill)
-                    .into()
+                container(iced::widget::Space::new()).into()
             };
 
-            let workspace = row![
+            let overlay = container(control_panel)
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .align_x(iced::alignment::Horizontal::Left)
+                .align_y(iced::alignment::Vertical::Top)
+                .padding(20);
+
+            let workspace = iced::widget::stack(vec![
                 preview_area,
-                iced::widget::Space::new().width(15.0),
-                control_panel,
-            ]
+                overlay.into(),
+            ])
             .width(Length::Fill)
             .height(Length::Fill);
 
